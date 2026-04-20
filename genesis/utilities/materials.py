@@ -3,7 +3,6 @@ from typing import Optional, Tuple
 import genesis as gs
 from genesis import Scene
 import numpy as np
-from operator import add
 
 _DIMENSIONALITY = 3
 _NEIGHBOR_OFFSET = [-1, 0, 1]
@@ -12,6 +11,7 @@ def random_sequential_addition(
     scene : Scene,
     box_pos : Tuple[float, float, float],
     granular_vol : Tuple[float, float, float],
+    particle_size : float,
     material_properties : dict,
     wall_thickness : float,
     color : Tuple[float, float, float],
@@ -33,17 +33,28 @@ def random_sequential_addition(
     
     if randomized_size:
         radii = np.random.uniform(min_p_size, max_p_size, n_p)
-    
+    else:
+        max_p_size = particle_size/2
+
+    def get_radius(i):
+        return radii[i] if randomized_size else max_p_size
+
     for i in range(n_p):
-        r = radii[i] if randomized_size else max_p_size
+        r = get_radius(i)
+        print(r)
         placed = False
         
         while not placed and attempts < max_attempts:
             attempts += 1
             
             # get a random cell
-            size = (depth - r, width - r, height - r) if spatial else (depth -r, width -r, r/2)
-            candidate = np.random.uniform(r, size)   
+            if spatial:
+                size = (depth - r, width - r, height - r)
+                candidate = np.random.uniform(r, size)  
+            else:
+                size = (depth - r, width -r)
+                candidate = np.append(np.random.uniform(r, size), r+wall_thickness/2)
+
             cell = tuple((candidate // 2*max_p_size).astype(int))
                        
             def particle_overlapping(neighbor_cell : list, depth : int = 0):
@@ -77,13 +88,21 @@ def random_sequential_addition(
                 positions.append(candidate)
                 accepted_radii.append(r)
                 grid[cell].append(idx)
-                print(f"candidate position:{candidate}")
-                
+                print(candidate)
                 scene.add_entity(
-                    gs.morphs.Sphere(
+                    morph=gs.morphs.Sphere(
+                    
                         pos=(x - width/2 + candidate[1], y - depth/2 + candidate[0], z +candidate[2] + wall_thickness/2),
                         radius=r,
-                    ),     
+                    ),    
+                    material=gs.materials.Rigid(
+                        # rho=material_properties.get('rho', 600),
+                        # friction=material_properties.get('friction', 0.1),
+                        # needs_coup=material_properties.get('needs_coup', True),
+                        # coup_friction=material_properties.get('coup_friction', 0.1),
+                        # coup_softness=material_properties.get('coup_softness', 0.002),
+                        # coup_restitution=material_properties.get('coup_restitution', 0.0),
+                    ),
                     surface=gs.surfaces.Default(
                         color = color,
                     ),
@@ -95,75 +114,6 @@ def random_sequential_addition(
             print(f"Stopped early at particle {i}")
             break
     print(f"Generated {len(positions)} particles out of {n_p}")
-                
-def add_box(
-    scene : Scene,
-    box_pos : Tuple[float, float, float],
-    box_vol : Tuple[float, float, float],
-    wall_thickness : float = 0.02,
-    box_color : Optional[Tuple[float, float, float]]=(0, 0, 0),
-):
-    x, y, z = box_pos
-    width, depth, height = box_vol
-    # ground plate
-    scene.add_entity(
-        gs.morphs.Box(
-            pos=(x, y, z),
-            size=(width, depth, wall_thickness),
-            fixed=True
-        ),     
-        surface=gs.surfaces.Default(
-            color = box_color,
-        ),
-    )
-    
-    # front wall (robot view)
-    scene.add_entity(
-        gs.morphs.Box(
-            pos=(x-(width+wall_thickness)/2, y, z+(height-wall_thickness)/2),
-            size=(wall_thickness, depth, height),
-            fixed=True
-        ),
-        surface=gs.surfaces.Default(
-            color = box_color,
-        ),
-    )
-    
-    # back wall (robot view)
-    scene.add_entity(
-        gs.morphs.Box(
-            pos=(x+(width+wall_thickness)/2, y, z+(height-wall_thickness)/2),
-            size=(wall_thickness, depth, height),
-            fixed=True
-        ),
-        surface=gs.surfaces.Default(
-            color = box_color,
-        ),
-    )
-    
-    # left wall (robot view)
-    scene.add_entity(
-        gs.morphs.Box(
-            pos=(x, y+(depth+wall_thickness)/2, z+(height-wall_thickness)/2),
-            size=(width, wall_thickness, height),
-            fixed=True
-        ),
-        surface=gs.surfaces.Default(
-            color = box_color,
-        ),
-    )
-     
-    # right wall (robot view)
-    scene.add_entity(
-        gs.morphs.Box(
-            pos=(x, y-(depth+wall_thickness)/2, z+(height-wall_thickness)/2),
-            size=(width, wall_thickness, height),
-            fixed=True
-        ),
-        surface=gs.surfaces.Default(
-            color = box_color,
-        ),
-    )
 
 def add_liquid(
     scene : Scene,
@@ -250,6 +200,75 @@ def add_sand(
     )
     return material
 
+def add_box(
+    scene : Scene,
+    box_pos : Tuple[float, float, float],
+    box_vol : Tuple[float, float, float],
+    wall_thickness : float = 0.02,
+    box_color : Optional[Tuple[float, float, float]]=(0, 0, 0),
+):
+    x, y, z = box_pos
+    width, depth, height = box_vol
+    # ground plate
+    scene.add_entity(
+        gs.morphs.Box(
+            pos=(x, y, z),
+            size=(width, depth, wall_thickness),
+            fixed=True
+        ),     
+        surface=gs.surfaces.Default(
+            color = box_color,
+        ),
+    )
+    
+    # front wall (robot view)
+    scene.add_entity(
+        gs.morphs.Box(
+            pos=(x-(width+wall_thickness)/2, y, z+(height-wall_thickness)/2),
+            size=(wall_thickness, depth, height),
+            fixed=True
+        ),
+        surface=gs.surfaces.Default(
+            color = box_color,
+        ),
+    )
+    
+    # back wall (robot view)
+    scene.add_entity(
+        gs.morphs.Box(
+            pos=(x+(width+wall_thickness)/2, y, z+(height-wall_thickness)/2),
+            size=(wall_thickness, depth, height),
+            fixed=True
+        ),
+        surface=gs.surfaces.Default(
+            color = box_color,
+        ),
+    )
+    
+    # left wall (robot view)
+    scene.add_entity(
+        gs.morphs.Box(
+            pos=(x, y+(depth+wall_thickness)/2, z+(height-wall_thickness)/2),
+            size=(width, wall_thickness, height),
+            fixed=True
+        ),
+        surface=gs.surfaces.Default(
+            color = box_color,
+        ),
+    )
+     
+    # right wall (robot view)
+    scene.add_entity(
+        gs.morphs.Box(
+            pos=(x, y-(depth+wall_thickness)/2, z+(height-wall_thickness)/2),
+            size=(width, wall_thickness, height),
+            fixed=True
+        ),
+        surface=gs.surfaces.Default(
+            color = box_color,
+        ),
+    )
+
 def spawn_sandbox(
     scene : Scene,
     material_type : str,
@@ -262,6 +281,7 @@ def spawn_sandbox(
     box_color : Optional[Tuple[float, float, float]]=(0, 0, 0),
     safety_margin : float = 0.02,
     omit_box : bool = False,
+    particle_size : float = 0.01
 ):
     """
     Add a sandbox to the scene with specified material and properties.
@@ -295,14 +315,22 @@ def spawn_sandbox(
             box_color=box_color
         )
     
-    if material_type == "granular":
+    if material_type == "rsa":
+        print (" FOR COMPARISON:")
+        print("box_pos: ", box_pos)
+        print("granular_vol: ", granular_vol)
+        print("particle_size: ", particle_size)
+        print("material_properties: ", material_properties)
+        print("wall_thickness: ", wall_thickness)
+        print("color: ", granular_color)
         material = random_sequential_addition(
             scene=scene,
             box_pos=box_pos,
             granular_vol=granular_vol,
             material_properties=material_properties,
             wall_thickness=wall_thickness,
-            color=granular_color
+            color=granular_color,
+            particle_size=particle_size
         )
     
     elif material_type == "sand":
@@ -327,3 +355,4 @@ def spawn_sandbox(
         raise ValueError(f"Unsupported material type {material_type}. Supported types are 'granular', 'sand', and 'liquid'.")
     
     return material
+

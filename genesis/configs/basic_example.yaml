@@ -1,0 +1,41 @@
+# SIMULATOR SETTINGS
+simulation:
+  dt: 4e-3
+  substeps : 1
+  backend : gpu
+  precision : '32' # increase to 64 if f64 is needed
+  performance_mode : False # set to True for policy training
+  viewer_options:
+    enable_viewer : True
+    viewer_type: "observer" # chose between "observer", "bird", and "leveled"
+    # camera_pos : [0.5, 0.5, 0.5] # to specify custom camera position
+    # camera_lookat : [0.0, 0.0, 0.0] # to specify custom camera lookat point
+    camera_fov : 30
+    max_FPS: 60
+
+
+# GRANULAR SETTINGS
+sandbox:
+  box:
+    pos : [0.5, 0.0, 0.0] # refers to the center of the box
+    vol : [0.3, 0.3, 0.1] # volume of the box [without wall thickness]
+    wall_thickness : 0.02 # thickness of the box walls and ground
+    color : [0.0, 0.0, 0.0] # default is black
+    omit : False # whether to omit the box and only spawn granular material
+  material:
+    vol : [0.27, 0.27, 0.1] # granular volume needs to be at least 'safety_margin' smaller than box volume in x and y
+    type : "rsa" # chose between "rsa", "sand", or "liquid". Default is rsa [Random Sequential Addition]
+    type_config : 
+      n_particles : 1 # configure type specific parameters and properties e.g. friction, younds modulus etc.
+    particle_size : 0.05 # rsa allows randomized sizes specified in type config 
+    color : [1.0, 1.0, 0.0] # default is yellow
+  safety_margin : 0.02 # gap between box and material to avoid wall clipping
+
+# Robot SETTINGS
+robot:
+  file : "utilities/xml/franka_emika_panda_with_tool/panda_robola_compile.xml"
+  tool_dim : [0.05, 0.0025, 0.03] # length, width, height of plate tool (assumes distance between grippers is second value)
+  pos: [0.0, 0.0, 0.0]
+  dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
+  dofs_kv : [450, 450, 350, 350, 200, 200, 200, 10, 10]
+  dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12, -100, -100], [ 87,  87,  87,  87,  12,  12,  12,  100,  100]]
