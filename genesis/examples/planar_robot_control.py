@@ -61,5 +61,5 @@ for i in range(0, 2000):
 
     # Note that this IK is for visualization purposes, so here we do not call scene.step(), but only update the state and the visualizer
     # In actual control applications, you should instead use robot.control_dofs_position() and scene.step()
-    robot.set_dofs_position(q)
-    scene.visualizer.update()
+    robot.control_dofs_position(q)
+    scene.step()

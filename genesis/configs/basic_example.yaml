@@ -6,7 +6,7 @@ simulation:
   precision : '32' # increase to 64 if f64 is needed
   performance_mode : False # set to True for policy training
   viewer_options:
-    enable_viewer : True
+    show_viewer : True
     viewer_type: "observer" # chose between "observer", "bird", and "leveled"
     # camera_pos : [0.5, 0.5, 0.5] # to specify custom camera position
     # camera_lookat : [0.0, 0.0, 0.0] # to specify custom camera lookat point
@@ -33,9 +33,11 @@ sandbox:
 
 # Robot SETTINGS
 robot:
-  file : "utilities/xml/franka_emika_panda_with_tool/panda_robola_compile.xml"
-  tool_dim : [0.05, 0.0025, 0.03] # length, width, height of plate tool (assumes distance between grippers is second value)
+  file : "utilities/xml/franka_emika_panda_with_tool/panda_with_tool.xml"
   pos: [0.0, 0.0, 0.0]
-  dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
-  dofs_kv : [450, 450, 350, 350, 200, 200, 200, 10, 10]
-  dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12, -100, -100], [ 87,  87,  87,  87,  12,  12,  12,  100,  100]]
+  dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000]
+  dofs_kv : [450, 450, 350, 350, 200, 200, 200]
+  dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12], [ 87,  87,  87,  87,  12,  12,  12]]
+  # dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
+  # dofs_kv : [450, 450, 350, 350, 200, 200, 200, 10, 10]
+  # dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12, -100, -100], [ 87,  87,  87,  87,  12,  12,  12,  100,  100]]
