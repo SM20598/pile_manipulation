@@ -17,7 +17,7 @@ simulation:
 # GRANULAR SETTINGS
 sandbox:
   box:
-    pos : [0.5, 0.0, 0.0] # refers to the center of the box
+    pos : [0.5, 0.0, 0.3] # refers to the center of the box
     vol : [0.3, 0.3, 0.1] # volume of the box [without wall thickness]
     wall_thickness : 0.02 # thickness of the box walls and ground
     color : [0.0, 0.0, 0.0] # default is black
@@ -26,18 +26,22 @@ sandbox:
     vol : [0.27, 0.27, 0.1] # granular volume needs to be at least 'safety_margin' smaller than box volume in x and y
     type : "rsa" # chose between "rsa", "sand", or "liquid". Default is rsa [Random Sequential Addition]
     type_config : 
-      n_particles : 1 # configure type specific parameters and properties e.g. friction, younds modulus etc.
-    particle_size : 0.05 # rsa allows randomized sizes specified in type config 
+      n_particles : 30 # configure type specific parameters and properties e.g. friction, younds modulus etc.
+    particle_size : 0.02 # rsa allows randomized sizes specified in type config 
     color : [1.0, 1.0, 0.0] # default is yellow
   safety_margin : 0.02 # gap between box and material to avoid wall clipping
 
+plate:
+  size : [0.1, 0.005, 0.06]
+  color: [0.0, 1.0, 0.0]
+
 # Robot SETTINGS
-robot:
-  file : "utilities/xml/franka_emika_panda_with_tool/panda_with_tool.xml"
-  pos: [0.0, 0.0, 0.0]
-  dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000]
-  dofs_kv : [450, 450, 350, 350, 200, 200, 200]
-  dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12], [ 87,  87,  87,  87,  12,  12,  12]]
+# robot:
+#   file : "utilities/xml/franka_emika_panda_with_tool/panda_with_tool.xml"
+#   pos: [0.0, 0.0, 0.0]
+#   dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000]
+#   dofs_kv : [450, 450, 350, 350, 200, 200, 200]
+#   dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12], [ 87,  87,  87,  87,  12,  12,  12]]
   # dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
   # dofs_kv : [450, 450, 350, 350, 200, 200, 200, 10, 10]
   # dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12, -100, -100], [ 87,  87,  87,  87,  12,  12,  12,  100,  100]]
