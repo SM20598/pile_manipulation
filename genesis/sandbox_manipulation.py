@@ -1,3 +1,4 @@
+from doctest import debug
 import genesis as gs
 import genesis.utils.geom as gu 
 from matplotlib.pyplot import box
@@ -117,39 +118,20 @@ class SandboxManipulation:
             gs.morphs.Plane()
         )
 
-        base_dir = pathlib.Path(__file__).parent
-
-        self._use_robot = self._config.get("robot", None) != None
-        self._use_plate = self._config.get("plate", None) != None
-        
-        if self._use_robot == self._use_plate:
-            raise AssertionError("Use either robot or plate")
-
-        if self._use_robot:
-            full_path = base_dir / self._config["robot"].get('file', "utilities/xml/franka_emika_panda_with_tool/panda_robola_compile.xml")
-            
-            self.robot = self._scene.add_entity(
-                gs.morphs.MJCF(
-                    file=full_path,
-                    pos=tuple(self._config["robot"].get('pos', [0, 0, 0]))   
-                    ),
-            )
-
-        if self._use_plate:
-            x, y, z = self._box_pos
-            _, _, box_height = self._box_vol
-            self._plate_size = self._config["plate"].get("size", [0.1, 0.005, 0.06])
-            self.plate = self._scene.add_entity(
-                material=gs.materials.Rigid(
-                ),
-                morph=gs.morphs.Box(
-                        pos=(x, y, z + (self._wall_thickness + self._granular_vol[2])/2 + box_height),
-                        size=self._plate_size, 
-                    ),    
-                surface=gs.surfaces.Default(
-                    color = self._config["plate"].get("color", [0.0, 1.0, 0.0]),
-                ),
-            )
+        x, y, z = self._box_pos
+        _, _, box_height = self._box_vol
+        self._plate_size = self._config["plate"].get("size", [0.1, 0.005, 0.06])
+        self.plate = self._scene.add_entity(
+            material=gs.materials.Rigid(
+            ),
+            morph=gs.morphs.Box(
+                    pos=(x, y, z + (self._wall_thickness + self._granular_vol[2])/2 + box_height),
+                    size=self._plate_size, 
+                ),    
+            surface=gs.surfaces.Default(
+                color = self._config["plate"].get("color", [0.0, 1.0, 0.0]),
+            ),
+        )
 
         if not self._config["sandbox"]["box"].get('omit', False):
             self._add_box()
@@ -218,7 +200,7 @@ class SandboxManipulation:
         )
 
     def _add_material(self):
-        material_type = self._config["sandbox"]["material"].get('type', 'rsa')
+        self.material_type = self._config["sandbox"]["material"].get('type', 'rsa')
         material_properties = self._config["sandbox"]["material"].get('type_config', {})
         granular_color = self._config["sandbox"]["material"].get('color', [1.0, 1.0, 0.0])
         self._safety_margin = self._config["sandbox"].get('safety_margin', 0.02)
@@ -229,7 +211,7 @@ class SandboxManipulation:
                 f"Safety margin of {self._safety_margin} exceeded. Box volume is x={self._box_vol[0]}, y={self._box_vol[1]}, but granular volume is x={self._granular_vol[0]}, y={self._granular_vol[1]}.")
 
         granular_touch_height = self._granular_vol[2]/2
-        if material_type == "rsa":
+        if self.material_type == "rsa":
             self.material = random_sequential_addition(
                 scene=self._scene,
                 box_pos=self._box_pos,
@@ -241,7 +223,7 @@ class SandboxManipulation:
             )
             granular_touch_height = self._particle_size/2
         
-        elif material_type == "sand":
+        elif self.material_type == "sand":
             self.material = add_sand(
                 scene=self._scene,
                 box_pos=self._box_pos,
@@ -250,7 +232,7 @@ class SandboxManipulation:
                 wall_thickness=self._wall_thickness,
                 sand_color=granular_color
             )
-        elif material_type == "liquid":
+        elif self.material_type == "liquid":
             self.material = add_liquid(
                 scene=self._scene,
                 box_pos=self._box_pos,
@@ -260,129 +242,85 @@ class SandboxManipulation:
                 color=granular_color,
             )
         else:
-            raise ValueError(f"Unsupported material type {material_type}. Supported types are 'granular', 'sand', and 'liquid'.")
+            raise ValueError(f"Unsupported material type {self.material_type}. Supported types are 'granular', 'sand', and 'liquid'.")
 
         self._operation_height = self._box_pos[2] + granular_touch_height + self._wall_thickness/2
-        
-        
-    def _plate_track_path(self, path, angle, velocity=0.02):
-        quat = gu.xyz_to_quat(np.array([0, 0, angle]))
-        quaternion = quaternion_multiply([0, 1, 0, 0], quat)
-        p_start = path[0]
-        p_end = path[-1]
-        
-        method = "velocity"
-        if method == "velocity":
-        
-            dofs_idx = [0, 1, 2, 3, 4, 5]
-            self.plate.set_dofs_kp((0.5,) * 6, dofs_idx)
-            self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
-            dt = self._scene.dt
-            v_x = (p_end[0] - p_start[0])*(len(path)*dt)
-            v_y = (p_end[1] - p_start[1])*(len(path)*dt)
-            
-            self.plate.set_pos(p_start)
-            
-            # q = np.concatenate((path[-1], [0, 0, angle]))
-            # self.plate.control_dofs_position(q)
-            print("Trajectory from", p_start, "to", p_end, "with velocity")
-            print("Start position", self.plate.get_pos())
-            self.plate.control_dofs_position_velocity(p_end, [v_x, v_y, 0], dofs_idx_local=[0, 1, 2])
-            fix_pose = np.array([self._operation_height, 0, 0, angle])
+    
+    
+    
+    def _plate_velocity_translation(self, p_start, p_end, speed, fix_pose, fix_dofs, debug=True):
+        if debug:
+            self._scene.clear_debug_objects()
             T_start = gu.trans_to_T(p_start)
             T_end = gu.trans_to_T(p_end)
-            self._scene.clear_debug_objects()
             self._scene.draw_debug_frame(T_start, axis_length=0.05, origin_size=0.001, axis_radius=0.001)
             self._scene.draw_debug_frame(T_end, axis_length=0.05, origin_size=0.001, axis_radius=0.001)
-            for i in range(250):
-                self.plate.set_dofs_position(fix_pose, dofs_idx_local=[2, 3, 4, 5])
-                self._scene.step()
-            print("Last position", self.plate.get_pos())
-        elif method=="position":
+        
+        # direction of movement
+        delta = p_end - p_start
+        dist = np.linalg.norm(delta)
+        
+        # speed
+        direction = delta / dist
+        v = direction * speed
+        print("direction", direction)
+        # move plate
+        self.plate.set_pos(p_start)
+        # self.plate.set_dofs_velocity(v, dofs_idx_local=[0, 1, 2])
+        self.plate.control_dofs_position_velocity(p_end, v, dofs_idx_local=[0, 1, 2])
+        # self.plate.control_dofs_velocity(v, dofs_idx_local=[0, 1, 2])
         
         
-            self.plate.set_pos(path[0])
-            for p in path:
-                # q = np.concatenate((p, [0, 0, angle]))
-                # self.plate.control_dofs_position(q)
-                self.plate.set_pos(pos=p)
-                self.plate.set_quat(quat=quaternion)
-                # for i in range(10):
-                self._scene.step()
         
-        elif method=="velocity2":
+        # number of steps to reach target position
+        n_required = int(np.ceil(dist/(speed * self._scene.dt)))
+        n_current = 0
+        reached_goal, abort = False, False
         
-            # ALTERNATIVE: TODO: FIND A WAY TO FIXATE THE HEIGHT OF THE PLATE    
-            v_x = np.cos(angle) * velocity
-            v_y = np.sin(angle) * velocity
-            dofs_idx = [0, 1, 2, 3, 4, 5]
-            self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
-            self.plate.set_dofs_kv((0.5,) * 6, dofs_idx)
-            self.plate.set_pos(path[0])
-            self.plate.set_quat(quaternion)
-            self.plate.control_dofs_position_velocity(path[-1], [v_x, v_y, 0], dofs_idx_local=[0, 1, 2])
-            while np.linalg.norm(np.array(self.plate.get_pos().cpu())[:2]-path[-1][:2]) > 0.01:
-                self.plate.set_dofs_position(self._operation_height, dofs_idx_local=[2])
-                print(np.linalg.norm(np.array(self.plate.get_pos().cpu())-path[-1]))
-                self._scene.step()
-        
-        # WHEN USING THE TOOL
-        # v_x = np.cos(angle) * velocity
-        # v_y = np.sin(angle) * velocity
-        
-        # self.plate.set_position([path[0]])
-        # self.plate.set_quaternion([quaternion])
-        # self.plate.set_velocity([[v_x, v_y, 0]])
-        # for _ in path:
-            
-        #     self._scene.step()
-        # return    
-        # dofs_idx = [0, 1, 2, 3, 4, 5]
-        # self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
-        # self.plate.set_dofs_kv((0.5,) * 6, dofs_idx)
-        # self.plate.control_dofs_position(path[-1], dofs_idx_local=[0, 1, 2])
-        # for _ in range(100):
-        #     self._scene.step()
-        
-        
-    
-    def _robot_track_path(self, path, quaternion):      
-        
-        
-        for pos in path:
-            q = self.robot.inverse_kinematics(
-                link=self.plate_frame,
-                pos=pos,
-                quat=quaternion,
-            )
-            self.robot.control_dofs_position(q)
-        # wait for robot to reach last position
-        for _ in range(150):
+        min_dist = dist
+        while not reached_goal and not abort:
+            n_current += 1
+            self.plate.set_dofs_position(fix_pose, dofs_idx_local=fix_dofs)
             self._scene.step()
-
-    def _robot_jump_to(self, position, quaternion):
-        q_init = self.robot.inverse_kinematics(
-            link = self.plate_frame,
-            pos  = position,
-            quat = quaternion,
-        )
-        self.robot.set_qpos(q_init)
-                     
+            # print(f"Distance to goal{np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end)}")
+            cur_dist = np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end)
+            if cur_dist < 0.001:
+                reached_goal = True
+            abort = (n_current > n_required)
+        
+        
+        if abort:
+            print("================ Abort =====================")
+            print(">> distance", dist)
+            print(">> velocity", speed)
+            print(">> n_required", n_required)
+            print("min dist", min_dist)
+        print("Distance at end", np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end))
+    
+        return reached_goal
+    
+    def _plate_position_translation(self, p_start, p_end, n_steps, fix_pose, fix_dofs, debug=True):
+    
+        t = np.linspace(0, 1, n_steps)
+        path = (1 - t[:, None]) * p_start[None, :] + t[:, None] * p_end[None, :]
+                
+        self.plate.set_pos(path[0])
+        for p in path:
+            self.plate.set_pos(pos=p)
+            self.plate.set_dofs_position(fix_pose, dofs_idx_local=fix_dofs)
+            self._scene.step()
+        
+    def _save_sample(self, start_state, action, end_state):
+        # TODO: SAVE
+        pass
+          
     def build(self):
         self._scene.build()
-
-        # Default control settings refer to panda robot with fixed fingers.
-        if self._use_robot:
-            self.robot.set_dofs_kp(self._config["robot"].get('dofs_kp', [4500, 4500, 3500, 3500, 2000, 2000, 2000]))
-            self.robot.set_dofs_kv(self._config["robot"].get('dofs_kv', [450, 450, 350, 350, 200, 200, 200]))
-            self.robot.set_dofs_force_range(*self._config["robot"].get('dofs_force_range', [
-                [-87, -87, -87, -87, -12, -12, -12],
-                [ 87,  87,  87,  87,  12,  12,  12]
-            ]))
-
-            self.plate_frame = self.robot.get_link("plate")
-        # else:
-        #     self.plate.set_mass(0.1)
+        
+        dofs_idx = [0, 1, 2, 3, 4, 5]
+        self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
+        self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
+        # self.plate.set_mass(0.1)
 
     def view(self, horizon=1000):
         for _ in range(horizon):
@@ -392,146 +330,104 @@ class SandboxManipulation:
         for _ in range(horizon):
             self._scene.step()
 
-    def collect_data_samples(self, n_samples=200, operation_height=None, robot_safety_margin=0.005, step_size=100):
-        box_x, box_y, box_z = self._box_pos
+    def collect_data_samples(self, n_samples=200, operation_height=None, robot_safety_margin=0.005, step_size=100, v_min=0.02, v_max=0.05, v_lift=0.01):
+        box_x, box_y, _ = self._box_pos
         _, _, box_height = self._box_vol
-
-        # timesteps for path interpolation
-        ts = np.linspace(0, 1, step_size)
-
-
+        tool_length, tool_width, tool_height = self._plate_size
+        
+        
+        self._operation_height += tool_height/2
         if operation_height is not None:
             self._operation_height = operation_height
 
-        # move end effector to box center (simplifies calculation of tool dimensions)
-        if self._use_robot:
-            self._robot_jump_to(
-                position=(box_x, box_y, self._operation_height+box_height),
-                quaternion=(0, 1, 0, 0)
-            )
-            
-            # Approximate tool dimensions from bounding box
-            # Note that the bounding box is aligned with the frame orientation, so tool dimensions can be derived directly
-            bbox_l, bbox_u = self.robot.geoms[-1].get_AABB()
-            tool_length = np.round(np.array(abs(bbox_l[0] - bbox_u[0]).cpu()), 3)
-            tool_width = np.round(np.array(abs(bbox_l[1] - bbox_u[1]).cpu()), 3)
-            tool_height = np.round(np.array(abs(bbox_l[2] - bbox_u[2]).cpu()), 3)
-
-        else:
-            # plate manipulation
-            tool_length, tool_width, tool_height = self._plate_size
-            self._operation_height += tool_height/2
-            print("Operation height", self._operation_height)
-            # self.plate.set_pos((box_x, box_y, self._operation_height+box_height))
+        ###################
+        # Action sampling #
+        ###################
         
-        print(f">> tool dimensions : {tool_length}x{tool_width}x{tool_height}")
-
-        thetas = np.random.uniform(low=-np.pi/2, high=np.pi/2, size=n_samples)        
+        thetas = np.random.uniform(low=-np.pi/2, high=np.pi/2, size=n_samples)   
+        velocities = np.random.uniform(v_min, v_max, size=n_samples)     
+        
+        # sampling dimensions in x and y from box center
         sample_space_x = self._granular_vol[0]/2 - abs(np.cos(thetas) * tool_length/2 + np.sin(thetas) * tool_width/2 + robot_safety_margin)
         sample_space_y = self._granular_vol[1]/2 - abs(np.sin(thetas) * tool_length/2 + np.cos(thetas) * tool_width/2 + robot_safety_margin)
 
         # Min and max coordinates of action sample areas
         low = np.stack([box_x - sample_space_x, box_y - sample_space_y], axis=1)
         high = np.stack([box_x + sample_space_x, box_y + sample_space_y], axis=1)
-
-        # Sampling n_samples start and end positions of action  
-        action_starts = np.random.uniform(low=low, high=high, size=(n_samples, 2))
-        action_stops = np.random.uniform(low=low, high=high, size=(n_samples, 2))
-
-
-        # Broadcasting
-        action_starts = action_starts[:, None, :]
-        action_stops = action_stops[:, None, :]
-        ts = ts[None, :, None]
-
-        # action paths: (start_pos) --------> (end_pos) trajectories for all 'n_samples' actions
-        action_xys = (1 - ts) * action_starts + ts * action_stops
-        action_paths = np.concatenate((
-            action_xys,
-            np.repeat(np.ones_like(ts)*self._operation_height, n_samples, axis=0)
-        ), axis=2)
-
-        # lowering paths: (above start_pos) ---------> (start_pos) trajectories for all 'n_samples' actions
-        decreasing_height = (1 - ts) * (self._operation_height + box_height) + ts * self._operation_height
-        lowering_paths = np.concatenate((
-            np.repeat(action_starts, step_size, axis=1),
-            np.repeat(decreasing_height, n_samples, axis=0)
-        ), axis=2)
-
-        # increasing paths: (end_pos) ---------> (above end_pos) trajectories for all 'n_samples' actions
-        increasing_height = (1 - ts) * self._operation_height + ts * (self._operation_height + box_height)
-        lifting_paths = np.concatenate((
-            np.repeat(action_stops, step_size, axis=1),
-            np.repeat(increasing_height, n_samples, axis=0)
-        ), axis=2)
-
-        # xyzs = np.pad(thetas[:, None], ((0,0),(0,2)), 'constant', constant_values=(0))
-        # quats = qu.from_euler_angles(xyzs)
-        # quats = gu.xyz_to_quat(xyzs)
-        # print(quats.shape)
-        # target_quat = quaternion_multiply([0, 1, 0, 0], quat)
         
-        print(f"Collecting {n_samples} of sweeping actions")
-        print(f"Paths have shape: {lowering_paths.shape}, {action_paths.shape}, and {lifting_paths.shape}")
+        
+        # Sampling n_samples start and end positions of action  
+        start_samples = np.random.uniform(low=low, high=high, size=(n_samples, 2))
+        stop_samples = np.random.uniform(low=low, high=high, size=(n_samples, 2))
+        _z = np.ones((n_samples, 1)) * self._operation_height
+        action_starts = np.concatenate((start_samples, _z), axis=1)
+        action_stops = np.concatenate((stop_samples, _z), axis=1)
 
-        for i in range(n_samples):
-
-            lowering = lowering_paths[i, :, :]
-            action = action_paths[i, :, :]
-            lifting = lifting_paths[i, :, :]
-            angle = thetas[i]
-
-            quat = gu.xyz_to_quat(np.array([0, 0, angle]))
-            target_quat = quaternion_multiply([0, 1, 0, 0], quat)
+        
+        for n in range(n_samples):
+            p_start = action_starts[n, :]
+            p_stop = action_stops[n, :]
+            speed = velocities[n]
+            angle = thetas[n]
             
-            if self._use_robot:
-                # position robot above action starting position
-                self._robot_jump_to(
-                    position=lowering[0],
-                    quaternion=target_quat
-                )
-
-                # go down to starting position
-                self._robot_track_path(
-                    path=lowering,
-                    quaternion=target_quat
-                )
+            state = []
+            if self.material_type == "rsa":
+                for e in self.material:
+                    state.append(np.array(e.get_pos().cpu()))
+                    
+            
+            # Lowering
+            success = self._plate_velocity_translation(
+                p_start + np.array([0, 0, box_height]),
+                p_start,
+                speed,
+                [p_start[0], p_start[1], 0, 0, angle],
+                [0, 1, 3, 4, 5],
+            )
+            
+            if not success:
+                print(f"ACTION {n}: Failed to reach target. Skipping.")
+                continue
+            
+            # Execute Sweeping
+            success = self._plate_velocity_translation(
+                p_start,
+                p_stop,
+                speed,
+                [self._operation_height, 0, 0, angle],
+                [2, 3, 4, 5],
+            )
+            
+            if not success:
+                print(f"ACTION {n}: Failed to reach target. Skipping.")
+                continue
                 
-                # execute action
-                self._robot_track_path(
-                    path=action,
-                    quaternion=target_quat
-                )
-
-                # go up after reaching the end
-                self._robot_track_path(
-                    path=lifting,
-                    quaternion=target_quat
-                )
+            # Lifting
+            self._plate_position_translation(
+                p_stop,
+                p_stop + np.array([0, 0, box_height]),
+                100,
+                [p_stop[0], p_stop[1], 0, 0, angle],
+                [0, 1, 3, 4, 5],
+            )
             
-            else:
-
-                # position robot above action starting position
-                # self._plate_track_path(
-                #     path=lowering[:1],
-                #     quaternion=target_quat
-                # )
-
-                # go down to starting position
-                # self._plate_track_path(
-                #     path=lowering,
-                #     angle=angle,
-                # )
-                
-                # execute action
-                self._plate_track_path(
-                    path=action,
-                    angle=angle,
-                )
-
-                # go up after reaching the end
-                # self._plate_track_path(
-                #     path=lifting,
-                #     angle=angle,
-                # )
+            if self.material_type == "rsa":
+                moving = 0
+                while moving > 0:
+                    moving = 0
+                    for e in self.material:
+                            v = np.linalg.norm(
+                                np.array(e.get_vel().cpu())
+                            ) 
+                            if v > 0.01:
+                                moving +=1
+                    self._scene.step()
+                    print(f"Action {n}: Number of moving particles: {moving}")
+                print(f"All particles {n} stopped.")
             
+            state_ = []
+            if self.material_type == "rsa":
+                for e in self.material:
+                    state_.append(np.array(e.get_pos().cpu()))
+        
+            self._save_sample(state, (p_start, p_stop, speed, angle), state_)                    

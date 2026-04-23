@@ -1,7 +1,7 @@
 # SIMULATOR SETTINGS
 simulation:
   dt: 4e-3
-  substeps : 5
+  substeps : 1
   backend : gpu
   precision : '32' # increase to 64 if f64 is needed
   performance_mode : False # set to True for policy training
@@ -34,14 +34,3 @@ sandbox:
 plate:
   size : [0.1, 0.005, 0.06]
   color: [0.0, 1.0, 0.0]
-
-# Robot SETTINGS
-# robot:
-#   file : "utilities/xml/franka_emika_panda_with_tool/panda_with_tool.xml"
-#   pos: [0.0, 0.0, 0.0]
-#   dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000]
-#   dofs_kv : [450, 450, 350, 350, 200, 200, 200]
-#   dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12], [ 87,  87,  87,  87,  12,  12,  12]]
-  # dofs_kp : [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
-  # dofs_kv : [450, 450, 350, 350, 200, 200, 200, 10, 10]
-  # dofs_force_range : [[-87, -87, -87, -87, -12, -12, -12, -100, -100], [ 87,  87,  87,  87,  12,  12,  12,  100,  100]]

@@ -39,6 +39,7 @@ def random_sequential_addition(
     def get_radius(i):
         return radii[i] if randomized_size else max_p_size
 
+    entities = []
     for i in range(n_p):
         r = get_radius(i)
         print(r)
@@ -88,32 +89,32 @@ def random_sequential_addition(
                 positions.append(candidate)
                 accepted_radii.append(r)
                 grid[cell].append(idx)
-                print(candidate)
-                scene.add_entity(
+                entity = scene.add_entity(
                     morph=gs.morphs.Sphere(
                     
                         pos=(x - width/2 + candidate[1], y - depth/2 + candidate[0], z +candidate[2] + wall_thickness/2),
                         radius=r,
                     ),    
                     material=gs.materials.Rigid(
-                        # rho=material_properties.get('rho', 600),
-                        # friction=material_properties.get('friction', 0.1),
-                        # needs_coup=material_properties.get('needs_coup', True),
-                        # coup_friction=material_properties.get('coup_friction', 0.1),
-                        # coup_softness=material_properties.get('coup_softness', 0.002),
-                        # coup_restitution=material_properties.get('coup_restitution', 0.0),
+                        rho=material_properties.get('rho', 1),
+                        friction=material_properties.get('friction', 0.1),
+                        needs_coup=material_properties.get('needs_coup', True),
+                        coup_friction=material_properties.get('coup_friction', 0.1),
+                        coup_softness=material_properties.get('coup_softness', 0.002),
+                        coup_restitution=material_properties.get('coup_restitution', 0.0),
                     ),
                     surface=gs.surfaces.Default(
                         color = color,
                     ),
                 )
-                
+                entities.append(entity)
                 placed = True
                 
         if attempts >= max_attempts:
             print(f"Stopped early at particle {i}")
             break
     print(f"Generated {len(positions)} particles out of {n_p}")
+    return entities
 
 def add_liquid(
     scene : Scene,
@@ -166,7 +167,7 @@ def add_liquid(
             vis_mode = 'particle',
         ),
     )
-    return entity
+    return [entity]
 
 def add_sand(
     scene : Scene,
@@ -181,7 +182,7 @@ def add_sand(
     x, y, z = box_pos
     g_height = granular_vol[2]
     
-    material = scene.add_entity(
+    entity = scene.add_entity(
         material=gs.materials.MPM.Sand(
             E=material_properties.get('E', 1e6),
             nu=material_properties.get('nu', 0.2),
@@ -198,7 +199,7 @@ def add_sand(
             vis_mode = 'particle',
         ),
     )
-    return material
+    return [entity]
 
 def add_box(
     scene : Scene,
