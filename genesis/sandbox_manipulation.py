@@ -1,5 +1,6 @@
 import genesis as gs
 import genesis.utils.geom as gu 
+from matplotlib.pyplot import box
 import numpy as np
 import yaml
 from utilities.materials import *
@@ -80,6 +81,9 @@ class SandboxManipulation:
             self._viewer_options = None
 
         self._scene = gs.Scene(
+                rigid_options=gs.options.RigidOptions(
+                dt=0.01,
+            ),
             sim_options=gs.options.SimOptions(
                 dt       = self._config["simulation"].get('dt', 4e3),
                 substeps = self._config["simulation"].get('substeps', 1),
@@ -136,7 +140,9 @@ class SandboxManipulation:
             _, _, box_height = self._box_vol
             self._plate_size = self._config["plate"].get("size", [0.1, 0.005, 0.06])
             self.plate = self._scene.add_entity(
-                    gs.morphs.Box(
+                material=gs.materials.Rigid(
+                ),
+                morph=gs.morphs.Box(
                         pos=(x, y, z + (self._wall_thickness + self._granular_vol[2])/2 + box_height),
                         size=self._plate_size, 
                     ),    
@@ -258,14 +264,91 @@ class SandboxManipulation:
 
         self._operation_height = self._box_pos[2] + granular_touch_height + self._wall_thickness/2
         
-    def _plate_track_path(self, path, quaternion):
-        for pos in path:
-            self.plate.set_pos(pos)
+        
+    def _plate_track_path(self, path, angle, velocity=0.02):
+        quat = gu.xyz_to_quat(np.array([0, 0, angle]))
+        quaternion = quaternion_multiply([0, 1, 0, 0], quat)
+        p_start = path[0]
+        p_end = path[-1]
+        
+        method = "velocity"
+        if method == "velocity":
+        
+            dofs_idx = [0, 1, 2, 3, 4, 5]
+            self.plate.set_dofs_kp((0.5,) * 6, dofs_idx)
+            self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
+            dt = self._scene.dt
+            v_x = (p_end[0] - p_start[0])*(len(path)*dt)
+            v_y = (p_end[1] - p_start[1])*(len(path)*dt)
+            
+            self.plate.set_pos(p_start)
+            
+            # q = np.concatenate((path[-1], [0, 0, angle]))
+            # self.plate.control_dofs_position(q)
+            print("Trajectory from", p_start, "to", p_end, "with velocity")
+            print("Start position", self.plate.get_pos())
+            self.plate.control_dofs_position_velocity(p_end, [v_x, v_y, 0], dofs_idx_local=[0, 1, 2])
+            fix_pose = np.array([self._operation_height, 0, 0, angle])
+            T_start = gu.trans_to_T(p_start)
+            T_end = gu.trans_to_T(p_end)
+            self._scene.clear_debug_objects()
+            self._scene.draw_debug_frame(T_start, axis_length=0.05, origin_size=0.001, axis_radius=0.001)
+            self._scene.draw_debug_frame(T_end, axis_length=0.05, origin_size=0.001, axis_radius=0.001)
+            for i in range(250):
+                self.plate.set_dofs_position(fix_pose, dofs_idx_local=[2, 3, 4, 5])
+                self._scene.step()
+            print("Last position", self.plate.get_pos())
+        elif method=="position":
+        
+        
+            self.plate.set_pos(path[0])
+            for p in path:
+                # q = np.concatenate((p, [0, 0, angle]))
+                # self.plate.control_dofs_position(q)
+                self.plate.set_pos(pos=p)
+                self.plate.set_quat(quat=quaternion)
+                # for i in range(10):
+                self._scene.step()
+        
+        elif method=="velocity2":
+        
+            # ALTERNATIVE: TODO: FIND A WAY TO FIXATE THE HEIGHT OF THE PLATE    
+            v_x = np.cos(angle) * velocity
+            v_y = np.sin(angle) * velocity
+            dofs_idx = [0, 1, 2, 3, 4, 5]
+            self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
+            self.plate.set_dofs_kv((0.5,) * 6, dofs_idx)
+            self.plate.set_pos(path[0])
             self.plate.set_quat(quaternion)
-
-            self._scene.step()
+            self.plate.control_dofs_position_velocity(path[-1], [v_x, v_y, 0], dofs_idx_local=[0, 1, 2])
+            while np.linalg.norm(np.array(self.plate.get_pos().cpu())[:2]-path[-1][:2]) > 0.01:
+                self.plate.set_dofs_position(self._operation_height, dofs_idx_local=[2])
+                print(np.linalg.norm(np.array(self.plate.get_pos().cpu())-path[-1]))
+                self._scene.step()
+        
+        # WHEN USING THE TOOL
+        # v_x = np.cos(angle) * velocity
+        # v_y = np.sin(angle) * velocity
+        
+        # self.plate.set_position([path[0]])
+        # self.plate.set_quaternion([quaternion])
+        # self.plate.set_velocity([[v_x, v_y, 0]])
+        # for _ in path:
+            
+        #     self._scene.step()
+        # return    
+        # dofs_idx = [0, 1, 2, 3, 4, 5]
+        # self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
+        # self.plate.set_dofs_kv((0.5,) * 6, dofs_idx)
+        # self.plate.control_dofs_position(path[-1], dofs_idx_local=[0, 1, 2])
+        # for _ in range(100):
+        #     self._scene.step()
+        
+        
     
-    def _robot_track_path(self, path, quaternion):
+    def _robot_track_path(self, path, quaternion):      
+        
+        
         for pos in path:
             q = self.robot.inverse_kinematics(
                 link=self.plate_frame,
@@ -298,6 +381,8 @@ class SandboxManipulation:
             ]))
 
             self.plate_frame = self.robot.get_link("plate")
+        # else:
+        #     self.plate.set_mass(0.1)
 
     def view(self, horizon=1000):
         for _ in range(horizon):
@@ -335,9 +420,10 @@ class SandboxManipulation:
         else:
             # plate manipulation
             tool_length, tool_width, tool_height = self._plate_size
-
-            self.plate.set_pos((box_x, box_y, self._operation_height+box_height))
-
+            self._operation_height += tool_height/2
+            print("Operation height", self._operation_height)
+            # self.plate.set_pos((box_x, box_y, self._operation_height+box_height))
+        
         print(f">> tool dimensions : {tool_length}x{tool_width}x{tool_height}")
 
         thetas = np.random.uniform(low=-np.pi/2, high=np.pi/2, size=n_samples)        
@@ -347,11 +433,6 @@ class SandboxManipulation:
         # Min and max coordinates of action sample areas
         low = np.stack([box_x - sample_space_x, box_y - sample_space_y], axis=1)
         high = np.stack([box_x + sample_space_x, box_y + sample_space_y], axis=1)
-
-        print(f">> Largest sample x+ : {max(sample_space_x)}")
-        print(f">> Largest sample x- : {min(sample_space_x)}")
-        print(f">> Largest sample y+ : {max(sample_space_y)}")
-        print(f">> Largest sample y- : {min(sample_space_y)}")
 
         # Sampling n_samples start and end positions of action  
         action_starts = np.random.uniform(low=low, high=high, size=(n_samples, 2))
@@ -400,26 +481,8 @@ class SandboxManipulation:
             lifting = lifting_paths[i, :, :]
             angle = thetas[i]
 
-            if (
-                (action[0][0] - box_x > 0.135) or
-                (action[-1][0] - box_x > 0.135) or
-                (abs(action[0][1]) > 0.135) or
-                (abs(action[-1][1]) > 0.135)
-            ):
-                print(f">> Theta : {angle}")
-                print(f">> Start : ( {action[0][0] - box_x} , {action[0][1]} )")
-                print(f">> End   : ( {action[-1][0] - box_x} , {action[-1][1]} )")
-
-                print(sample_space_x[i])
-                print(sample_space_y[i])
-
             quat = gu.xyz_to_quat(np.array([0, 0, angle]))
             target_quat = quaternion_multiply([0, 1, 0, 0], quat)
-
-            if np.all(action[:, 2]) == self._operation_height:
-                print("Diverging height in action:")
-                print(action[:, 2])
-
             
             if self._use_robot:
                 # position robot above action starting position
@@ -449,80 +512,26 @@ class SandboxManipulation:
             else:
 
                 # position robot above action starting position
-                self._plate_track_path(
-                    path=lowering[:1],
-                    quaternion=target_quat
-                )
+                # self._plate_track_path(
+                #     path=lowering[:1],
+                #     quaternion=target_quat
+                # )
 
                 # go down to starting position
-                self._plate_track_path(
-                    path=lowering,
-                    quaternion=target_quat
-                )
+                # self._plate_track_path(
+                #     path=lowering,
+                #     angle=angle,
+                # )
                 
                 # execute action
                 self._plate_track_path(
                     path=action,
-                    quaternion=target_quat
+                    angle=angle,
                 )
 
                 # go up after reaching the end
-                self._plate_track_path(
-                    path=lifting,
-                    quaternion=target_quat
-                )
-
-        # for p_start, p_stop, angle in zip(xy_start, xy_stop, thetas):
-        #     x_start, y_start = p_start
-        #     x_stop, y_stop = p_stop
-        #     quat = gu.xyz_to_quat(np.array([0, 0, angle]))
-        #     target_quat = quaternion_multiply([0, 1, 0, 0], quat)
-            
-        #     # jump to start x-y coordinates
-        #     action_init_pos = (x_start, y_start, operation_height*2)
-        #     action_init_q = self.robot.inverse_kinematics(
-        #         link=plate_frame,
-        #         pos=action_init_pos,
-        #         quat=target_quat,
-        #     )
-        #     self.robot.set_qpos(action_init_q)
-            
-
-        #     # move to start pose of action
-        #     path = get_vertical_path(x_start, y_start, operation_height*2, operation_height)
-        #     for wp in path:
-        #         q = self.robot.inverse_kinematics(
-        #             link=plate_frame,
-        #             pos=wp,
-        #             quat=target_quat,
-        #         )
-        #         self.robot.control_dofs_position(q)
-        #     for _ in range(100):
-        #         self._scene.step()
-            
-
-        #     # execute action
-        #     path = get_horizontal_path(p_start, p_stop, operation_height, n_steps=100)
-        #     for wp in path:
-        #         q = self.robot.inverse_kinematics(
-        #                 link=plate_frame,
-        #                 pos=wp,
-        #                 quat=target_quat,
-        #             )
-        #         self.robot.control_dofs_position(q)
-        #         self._scene.step()
-        #     for _ in range(100):
-        #         self._scene.step()
-
-        #     # move up to end pose of action
-        #     path = get_vertical_path(x_stop, y_stop, operation_height, operation_height*2)
-        #     for wp in path:
-        #         q = self.robot.inverse_kinematics(
-        #             link=plate_frame,
-        #             pos=wp,
-        #             quat=target_quat,
-        #         )
-        #         self.robot.control_dofs_position(q)
-        #     for _ in range(100):
-        #         self._scene.step()
+                # self._plate_track_path(
+                #     path=lifting,
+                #     angle=angle,
+                # )
             

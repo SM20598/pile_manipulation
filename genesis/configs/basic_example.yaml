@@ -1,7 +1,7 @@
 # SIMULATOR SETTINGS
 simulation:
   dt: 4e-3
-  substeps : 1
+  substeps : 5
   backend : gpu
   precision : '32' # increase to 64 if f64 is needed
   performance_mode : False # set to True for policy training
@@ -26,7 +26,7 @@ sandbox:
     vol : [0.27, 0.27, 0.1] # granular volume needs to be at least 'safety_margin' smaller than box volume in x and y
     type : "rsa" # chose between "rsa", "sand", or "liquid". Default is rsa [Random Sequential Addition]
     type_config : 
-      n_particles : 30 # configure type specific parameters and properties e.g. friction, younds modulus etc.
+      n_particles : 20 # configure type specific parameters and properties e.g. friction, younds modulus etc.
     particle_size : 0.02 # rsa allows randomized sizes specified in type config 
     color : [1.0, 1.0, 0.0] # default is yellow
   safety_margin : 0.02 # gap between box and material to avoid wall clipping
