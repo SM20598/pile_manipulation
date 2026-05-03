@@ -1,0 +1,49 @@
+plate:
+  size:
+  - 0.04
+  - 0.001
+  - 0.01
+sandbox:
+  box:
+    omit: false
+    pos:
+    - 0.0
+    - 0.0
+    - 0.0
+    properties:
+      friction: 0.5
+    vol:
+    - 0.127
+    - 0.127
+    - 0.04
+    wall_thickness: 0.02
+  material:
+    properties:
+      cubes: true
+      density:
+      - 1200
+      - 1500
+      friction:
+      - 0.3
+      - 0.55
+      n_particles: 30
+      particle_size:
+      - 0.009
+      - 0.012
+    type: rsa
+    vol:
+    - 0.12
+    - 0.12
+    - 0.1
+  safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 10
+  viewer_options:
+    camera_fov: 30
+    max_FPS: 60
+    show_viewer: true
+    viewer_type: bird

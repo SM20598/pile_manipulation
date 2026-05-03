@@ -33,7 +33,7 @@ franka = scene.add_entity(
 )
 ########################## build ##########################
 scene.build()
-
+cube.set_mass(0.001)
 motors_dof = np.arange(7)
 fingers_dof = np.arange(7, 9)
 

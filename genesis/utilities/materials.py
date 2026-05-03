@@ -11,18 +11,19 @@ def random_sequential_addition(
     scene : Scene,
     box_pos : Tuple[float, float, float],
     granular_vol : Tuple[float, float, float],
-    particle_size : float,
     material_properties : dict,
     wall_thickness : float,
     color : Tuple[float, float, float],
 ):
     """Random Sequential Addition (RSA) of spheres with linked-cell (grid) acceleration."""
     n_p = material_properties.get('n_particles', 1000)
-    max_p_size = material_properties.get('max_particle_size', 0.02)
-    min_p_size = material_properties.get('min_particle_size', 0.01)
-    randomized_size = material_properties.get('randomize_particle_size', False)
     spatial = material_properties.get('spatial', False)
     max_attempts = material_properties.get('max_attempts', 200000)
+    particle_size = material_properties['particle_size']
+    density = material_properties.get('density', None)
+    friction = material_properties.get('friction', None)
+    cubes = material_properties.get('cubes', False)
+    
     x, y, z = box_pos
     width, depth, height = granular_vol
     
@@ -31,13 +32,16 @@ def random_sequential_addition(
     accepted_radii = []
     grid = defaultdict(list)    
     
-    if randomized_size:
-        radii = np.random.uniform(min_p_size, max_p_size, n_p)
-    else:
-        max_p_size = particle_size/2
+    fix_size = isinstance(particle_size, float)
+    if not fix_size:
+        if len(particle_size) > 2 :
+            raise ValueError("particle size has too many values. Either set scalar or tuple/list of length 2.")
+        radii = np.random.uniform(particle_size[0]/2, particle_size[1]/2, n_p)
+        densities = np.random.uniform(density[0], density[1], n_p)
+        frictions = np.random.uniform(friction[0], friction[1], n_p)
 
     def get_radius(i):
-        return radii[i] if randomized_size else max_p_size
+        return particle_size/2 if fix_size else radii[i]
 
     entities = []
     for i in range(n_p):
@@ -56,7 +60,8 @@ def random_sequential_addition(
                 size = (depth - r, width -r)
                 candidate = np.append(np.random.uniform(r, size), r+wall_thickness/2)
 
-            cell = tuple((candidate // 2*max_p_size).astype(int))
+            diameter = particle_size if fix_size else particle_size[1]
+            cell = tuple((candidate // diameter).astype(int))
                        
             def particle_overlapping(neighbor_cell : list, depth : int = 0):
                 """
@@ -89,19 +94,23 @@ def random_sequential_addition(
                 positions.append(candidate)
                 accepted_radii.append(r)
                 grid[cell].append(idx)
-                entity = scene.add_entity(
+
+                if cubes:
+                    morph = gs.morphs.Box(
+                        pos=(x - width/2 + candidate[1], y - depth/2 + candidate[0], z +candidate[2] + wall_thickness),
+                        size=(r, r, r)
+                    )
+                else:
                     morph=gs.morphs.Sphere(
-                    
-                        pos=(x - width/2 + candidate[1], y - depth/2 + candidate[0], z +candidate[2] + wall_thickness/2),
+                        pos=(x - width/2 + candidate[1], y - depth/2 + candidate[0], z +candidate[2] + wall_thickness),
                         radius=r,
-                    ),    
+                    ) 
+
+                entity = scene.add_entity(
+                    morph=morph,
                     material=gs.materials.Rigid(
-                        rho=material_properties.get('rho', 1),
-                        friction=material_properties.get('friction', 0.1),
-                        needs_coup=material_properties.get('needs_coup', True),
-                        coup_friction=material_properties.get('coup_friction', 0.1),
-                        coup_softness=material_properties.get('coup_softness', 0.002),
-                        coup_restitution=material_properties.get('coup_restitution', 0.0),
+                        rho=density if fix_size else densities[i],
+                        friction=friction if fix_size else frictions[i],
                     ),
                     surface=gs.surfaces.Default(
                         color = color,
@@ -212,7 +221,7 @@ def add_box(
     width, depth, height = box_vol
     # ground plate
     scene.add_entity(
-        gs.morphs.Box(
+        morph=gs.morphs.Box(
             pos=(x, y, z),
             size=(width, depth, wall_thickness),
             fixed=True
@@ -224,7 +233,7 @@ def add_box(
     
     # front wall (robot view)
     scene.add_entity(
-        gs.morphs.Box(
+        morph=gs.morphs.Box(
             pos=(x-(width+wall_thickness)/2, y, z+(height-wall_thickness)/2),
             size=(wall_thickness, depth, height),
             fixed=True
@@ -236,7 +245,7 @@ def add_box(
     
     # back wall (robot view)
     scene.add_entity(
-        gs.morphs.Box(
+        morph=gs.morphs.Box(
             pos=(x+(width+wall_thickness)/2, y, z+(height-wall_thickness)/2),
             size=(wall_thickness, depth, height),
             fixed=True
@@ -248,7 +257,7 @@ def add_box(
     
     # left wall (robot view)
     scene.add_entity(
-        gs.morphs.Box(
+        morph=gs.morphs.Box(
             pos=(x, y+(depth+wall_thickness)/2, z+(height-wall_thickness)/2),
             size=(width, wall_thickness, height),
             fixed=True
@@ -260,7 +269,7 @@ def add_box(
      
     # right wall (robot view)
     scene.add_entity(
-        gs.morphs.Box(
+        morph=gs.morphs.Box(
             pos=(x, y-(depth+wall_thickness)/2, z+(height-wall_thickness)/2),
             size=(width, wall_thickness, height),
             fixed=True

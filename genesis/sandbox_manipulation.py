@@ -1,25 +1,29 @@
-from doctest import debug
 import genesis as gs
 import genesis.utils.geom as gu 
-from matplotlib.pyplot import box
 import numpy as np
 import yaml
 from utilities.materials import *
-from utilities.helper_functions import quaternion_multiply, get_horizontal_path, get_vertical_path 
-import pathlib
 import quaternion as qu
-
+from pathlib import Path
+import pickle
+import os
 
 class SandboxManipulation:
 
     def __init__(self, config,):
-        base_dir = pathlib.Path(__file__).parent
-        full_path = base_dir / config
-        with open(full_path) as stream:
-            try:
-                self._config = yaml.safe_load(stream)
-            except yaml.YAMLError as exc:
-                print(exc)
+
+        if isinstance(config, dict):
+            self._config = config
+        elif isinstance(config, (str, Path)):
+            base_dir = Path(__file__).parent
+            full_path = base_dir / config
+            with open(full_path) as stream:
+                try:
+                    self._config = yaml.safe_load(stream)
+                except yaml.YAMLError as exc:
+                    print(exc)
+        else:
+            raise TypeError("config must be dict or a path to a YAML file")
         
         # Initialize Genesis Environment
         gs.init(
@@ -29,15 +33,20 @@ class SandboxManipulation:
         )
 
         # PARAMETERS FOR TRAINING
-        self._box_pos = self._config["sandbox"]["box"].get('pos', [0.5, 0.0, 0.0])
+        self.num_envs = self._config["simulation"].get('n_envs', 1)
+        self._box_pos = self._config["sandbox"]["box"].get('pos', [0.0, 0.0, 0.0])
         self._box_vol = self._config["sandbox"]["box"].get('vol', [0.3, 0.3, 0.1])
         self._wall_thickness = self._config["sandbox"]["box"].get('wall_thickness', 0.02)
-        self._particle_size = self._config["sandbox"]["material"].get('particle_size', 0.01)
+        self._particle_size = self._config["sandbox"]["material"]["properties"].get('particle_size', 0.01)
         self._granular_vol = self._config["sandbox"]["material"].get('vol', [0.27, 0.27, 0.1])
-        
+        self._material_type = self._config["sandbox"]["material"].get('type', 'rsa')
 
         self._init_scene()
         self._add_entities()
+
+        self._data_samples = {n : [] for n in range(self.num_envs)}
+        self._n_aborted_down = 0
+        self._n_aborted_action = 0
 
     def _init_scene(self):
         viewer_settings = self._config["simulation"].get('viewer_options', dict())
@@ -55,16 +64,16 @@ class SandboxManipulation:
         
         if viewer_type == "observer":
             self._viewer_options = gs.options.ViewerOptions(
-                camera_pos    = viewer_settings.get('camera_pos', [1.5, 0.0, 1.3]),
-                camera_lookat = viewer_settings.get('camera_lookat', [0.5, 0.0, 0.2]),
+                camera_pos    = viewer_settings.get('camera_pos', [3 * v_x, 0.0, 10*v_z]),
+                camera_lookat = viewer_settings.get('camera_lookat', [0.0, 0.0, v_z/2]),
                 camera_fov    = c_fov,
                 max_FPS       = max_fps,
                 res           = resolution,
             )
         elif viewer_type == "bird":
             self._viewer_options = gs.options.ViewerOptions(
-                camera_pos    = viewer_settings.get('camera_pos', [0.5, 0.0, 1.2]),
-                camera_lookat = viewer_settings.get('camera_lookat', [0.5, 0.0, 0.0]),
+                camera_pos    = viewer_settings.get('camera_pos', [b_x, b_y, 10*v_z]),
+                camera_lookat = viewer_settings.get('camera_lookat', [0.0, 0.0, 0.0]),
                 camera_fov    = c_fov,
                 max_FPS       = max_fps,
                 res           = resolution,
@@ -82,28 +91,27 @@ class SandboxManipulation:
             self._viewer_options = None
 
         self._scene = gs.Scene(
-                rigid_options=gs.options.RigidOptions(
-                dt=0.01,
-            ),
             sim_options=gs.options.SimOptions(
                 dt       = self._config["simulation"].get('dt', 4e3),
                 substeps = self._config["simulation"].get('substeps', 1),
+            ),
+            rigid_options=gs.options.RigidOptions(
             ),
             mpm_options=gs.options.MPMOptions(
                 lower_bound = l_bound,
                 upper_bound = u_bound,
                 particle_size = self._particle_size,
-            ),
+            ) if self._material_type in ("sand", "liquid") else None,
             sph_options=gs.options.SPHOptions(
                 lower_bound = l_bound,
                 upper_bound = u_bound,
                 particle_size = self._particle_size,
-            ),
+            ) if self._material_type == "liquid" else None,
             pbd_options=gs.options.PBDOptions(
                 lower_bound = l_bound,
                 upper_bound = u_bound,
                 particle_size = self._particle_size,
-            ),
+            ) if self._material_type == "liquid" else None,
             viewer_options = self._viewer_options,
             vis_options=gs.options.VisOptions(
                 show_link_frame=viz_settings.get('show_link_frame', False),
@@ -120,9 +128,11 @@ class SandboxManipulation:
 
         x, y, z = self._box_pos
         _, _, box_height = self._box_vol
+
         self._plate_size = self._config["plate"].get("size", [0.1, 0.005, 0.06])
         self.plate = self._scene.add_entity(
             material=gs.materials.Rigid(
+                rho=3000,
             ),
             morph=gs.morphs.Box(
                     pos=(x, y, z + (self._wall_thickness + self._granular_vol[2])/2 + box_height),
@@ -142,10 +152,15 @@ class SandboxManipulation:
         x, y, z = self._box_pos
         width, depth, height = self._box_vol
         box_color = self._config["sandbox"]["box"].get('color', [0.0, 0.0, 0.0])
+        friction = self._config["sandbox"]["box"]["properties"].get('friction', 1)
 
-        self.box_dimensions = {}
-        self.box_dimensions["ground_plate"] = self._scene.add_entity(
-            gs.morphs.Box(
+        self.box_parts = {}
+        self.box_parts["ground_plate"] = self._scene.add_entity(
+
+            material=gs.materials.Rigid(
+                friction=friction,
+            ),    
+            morph=gs.morphs.Box(
                 pos=self._box_pos,
                 size=(width, depth, self._wall_thickness),
                 fixed=True
@@ -155,8 +170,11 @@ class SandboxManipulation:
             ),
         )
         
-        self.box_dimensions["front_wall"] = self._scene.add_entity(
-            gs.morphs.Box(
+        self.box_parts["front_wall"] = self._scene.add_entity(
+            material=gs.materials.Rigid(
+                friction=friction,
+            ),    
+            morph=gs.morphs.Box(
                 pos=(x-(width+self._wall_thickness)/2, y, z+(height-self._wall_thickness)/2),
                 size=(self._wall_thickness, depth, height),
                 fixed=True
@@ -166,8 +184,11 @@ class SandboxManipulation:
             ),
         )
         
-        self.box_dimensions["back_wall"] = self._scene.add_entity(
-            gs.morphs.Box(
+        self.box_parts["back_wall"] = self._scene.add_entity(
+            material=gs.materials.Rigid(
+                friction=friction,
+            ),    
+            morph=gs.morphs.Box(
                 pos=(x+(width+self._wall_thickness)/2, y, z+(height-self._wall_thickness)/2),
                 size=(self._wall_thickness, depth, height),
                 fixed=True
@@ -177,8 +198,11 @@ class SandboxManipulation:
             ),
         )
         
-        self.box_dimensions["left_wall"] = self._scene.add_entity(
-            gs.morphs.Box(
+        self.box_parts["left_wall"] = self._scene.add_entity(
+            material=gs.materials.Rigid(
+                friction=friction,
+            ),    
+            morph=gs.morphs.Box(
                 pos=(x, y+(depth+self._wall_thickness)/2, z+(height-self._wall_thickness)/2),
                 size=(width, self._wall_thickness, height),
                 fixed=True
@@ -188,8 +212,11 @@ class SandboxManipulation:
             ),
         )
         
-        self.box_dimensions["right_wall"] = self._scene.add_entity(
-            gs.morphs.Box(
+        self.box_parts["right_wall"] = self._scene.add_entity(
+            material=gs.materials.Rigid(
+                friction=friction,
+            ),    
+            morph=gs.morphs.Box(
                 pos=(x, y-(depth+self._wall_thickness)/2, z+(height-self._wall_thickness)/2),
                 size=(width, self._wall_thickness, height),
                 fixed=True
@@ -200,8 +227,7 @@ class SandboxManipulation:
         )
 
     def _add_material(self):
-        self.material_type = self._config["sandbox"]["material"].get('type', 'rsa')
-        material_properties = self._config["sandbox"]["material"].get('type_config', {})
+        material_properties = self._config["sandbox"]["material"].get('properties', {})
         granular_color = self._config["sandbox"]["material"].get('color', [1.0, 1.0, 0.0])
         self._safety_margin = self._config["sandbox"].get('safety_margin', 0.02)
 
@@ -211,19 +237,18 @@ class SandboxManipulation:
                 f"Safety margin of {self._safety_margin} exceeded. Box volume is x={self._box_vol[0]}, y={self._box_vol[1]}, but granular volume is x={self._granular_vol[0]}, y={self._granular_vol[1]}.")
 
         granular_touch_height = self._granular_vol[2]/2
-        if self.material_type == "rsa":
+        if self._material_type == "rsa":
             self.material = random_sequential_addition(
                 scene=self._scene,
                 box_pos=self._box_pos,
                 granular_vol=self._granular_vol,
-                particle_size=self._particle_size,
                 material_properties=material_properties,
                 wall_thickness=self._wall_thickness,
                 color=granular_color
-            )
-            granular_touch_height = self._particle_size/2
+            )                
+            granular_touch_height = self._particle_size/2 if isinstance(self._particle_size, float) else min(self._particle_size)/4
         
-        elif self.material_type == "sand":
+        elif self._material_type == "sand":
             self.material = add_sand(
                 scene=self._scene,
                 box_pos=self._box_pos,
@@ -232,7 +257,7 @@ class SandboxManipulation:
                 wall_thickness=self._wall_thickness,
                 sand_color=granular_color
             )
-        elif self.material_type == "liquid":
+        elif self._material_type == "liquid":
             self.material = add_liquid(
                 scene=self._scene,
                 box_pos=self._box_pos,
@@ -242,13 +267,134 @@ class SandboxManipulation:
                 color=granular_color,
             )
         else:
-            raise ValueError(f"Unsupported material type {self.material_type}. Supported types are 'granular', 'sand', and 'liquid'.")
+            raise ValueError(f"Unsupported material type {self._material_type}. Supported types are 'granular', 'sand', and 'liquid'.")
 
-        self._operation_height = self._box_pos[2] + granular_touch_height + self._wall_thickness/2
+        self._operation_height = self._box_pos[2] + granular_touch_height + self._wall_thickness/2    
+
+    def _shift_physic_param(self, param : str, entity: list, val: list | np.ndarray):
+
+        if len(val) != self.num_envs:
+            raise ValueError(
+                f"Number of passed values {len(val)} does not match number of environments {self.num_envs}"
+            )
+
+        for e in entity:
+            if param == "mass":
+                e.set_mass_shift(val)
+            elif param == "friction": 
+                e.set_friction(val)
+            else:
+                raise NotImplementedError(f"Shifting {param} is not supported.")
+
+    def _save_sample(self, sample):
+        for n in range(self.num_envs):
+            self._data_samples[n].append(sample)        
+
+    def _save_data(
+            self,
+            n : int,
+            path : str | Path
+    ):
+        
+        with open(path, 'wb') as handle:
+            pickle.dump(self._data_samples[n], handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def _save_config(
+            self,
+            n : int,
+            path : str | Path
+        ):
+
+        # add shifts to config export
+        if hasattr(self, '_box_friction_ratio'):
+            self._config['sandbox']['box']['properties']["friction_ratio"] = self._box_friction_ratio[n]
+        if hasattr(self, '_material_mass_shift'):
+            self._config['sandbox']['material']['properties']["mass_shift"] = self._material_mass_shift[n]
+        if hasattr(self, '_material_friction_ratio'):
+            self._config['sandbox']['material']['properties']["friction_ratio"] = self._material_friction_ratio[n]
+
+        with open(path, 'w') as outfile:
+            try: 
+                yaml.dump(self._config, outfile, default_flow_style=False)
+            except yaml.YAMLError as exc:
+                print(exc)
+       
+    def build(self):
+        self._scene.build(self.num_envs, env_spacing=(1.0, 1.0))
+        
+        dofs_idx = [0, 1, 2, 3, 4, 5]
+        self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
+        self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
+
+    def destroy(self):
+        "Destroying environment"
+        gs.destroy()
+
+    def view(self, horizon=1000):
+        for _ in range(horizon):
+            self._scene.visualizer.update()
     
+    def simulate(self, horizon=1000):
+        for _ in range(horizon):
+            self._scene.step()
+
+    def set_material_state(self, positions : list | np.ndarray):
+        """set position of particles"""
+        
+        if self._material_type != "rsa":
+            raise NotImplementedError("Method not implemented for materials other than RSA")
+
+        if len(positions) != len(self.material):
+            raise ValueError(
+                f"Number of positions {len(positions)} does not match number of particles {len(self.material)}"
+            )
+
+        for pos, particle in zip(positions, self.material):
+            particle.set_pos(pos)
+
+    def get_material_state(self,):
+        """
+        Returns an array of particle positions
+        """
+        if self._material_type != "rsa":
+            raise NotImplementedError("Method not implemented for materials other than RSA")
+        
+        # check if no particle is moving
+        n_p = len(self.material)
+        moving = True
+
+        self.plate.set_pos(self.plate.get_pos())
+        self.plate.control_dofs_position_velocity(self.plate.get_pos(), np.zeros((3)), dofs_idx_local=[0, 1, 2])
+        while moving:
+            
+            v = np.zeros((len(self.material), self.num_envs))
+            for i, e in enumerate(self.material):
+                v[i, :] = np.linalg.norm(np.array(e.get_vel().cpu()), axis=1)
+            
+            v_max = np.max(v, axis=0)
+            if (v_max < 0.01).all():
+                moving = False
+            
+            # freeze plate
+            self.plate.set_dofs_position(self.plate.get_dofs_position())            
+            self._scene.step()
+        
+        print(f"All particles stopped.")
+        
+        state = np.zeros((n_p, self.num_envs, 3))
+        for i, e in enumerate(self.material):
+            state[i, :, :] = np.array(e.get_pos().cpu())
+        return np.reshape(state, (self.num_envs, n_p, 3))
+
+    def get_collected_samples(self):
+        """
+        Return previously collected samples
+        
+        Each samples consists of state(i), state(i+1), start_position, end_position, angle, velocity
+        """
+        return self._data_samples.values()
     
-    
-    def _plate_velocity_translation(self, p_start, p_end, speed, fix_pose, fix_dofs, debug=True):
+    def plate_velocity_translation(self, p_start, p_end, speed, fix_pose, fix_dofs, debug=True):
         if debug:
             self._scene.clear_debug_objects()
             T_start = gu.trans_to_T(p_start)
@@ -263,43 +409,34 @@ class SandboxManipulation:
         # speed
         direction = delta / dist
         v = direction * speed
-        print("direction", direction)
+
         # move plate
         self.plate.set_pos(p_start)
-        # self.plate.set_dofs_velocity(v, dofs_idx_local=[0, 1, 2])
         self.plate.control_dofs_position_velocity(p_end, v, dofs_idx_local=[0, 1, 2])
-        # self.plate.control_dofs_velocity(v, dofs_idx_local=[0, 1, 2])
-        
-        
-        
+                
         # number of steps to reach target position
         n_required = int(np.ceil(dist/(speed * self._scene.dt)))
         n_current = 0
         reached_goal, abort = False, False
-        
-        min_dist = dist
         while not reached_goal and not abort:
             n_current += 1
             self.plate.set_dofs_position(fix_pose, dofs_idx_local=fix_dofs)
             self._scene.step()
-            # print(f"Distance to goal{np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end)}")
             cur_dist = np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end)
-            if cur_dist < 0.001:
+            if cur_dist < 0.005:
                 reached_goal = True
-            abort = (n_current > n_required)
+            abort = (n_current > n_required*1.5)
         
         
         if abort:
-            print("================ Abort =====================")
-            print(">> distance", dist)
-            print(">> velocity", speed)
-            print(">> n_required", n_required)
-            print("min dist", min_dist)
-        print("Distance at end", np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end))
+            print("Aborted")
+        else:
+            print("Success")            
+        print(">> Distance at end", np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end))
     
         return reached_goal
     
-    def _plate_position_translation(self, p_start, p_end, n_steps, fix_pose, fix_dofs, debug=True):
+    def plate_position_translation(self, p_start, p_end, n_steps, fix_pose, fix_dofs, debug=True):
     
         t = np.linspace(0, 1, n_steps)
         path = (1 - t[:, None]) * p_start[None, :] + t[:, None] * p_end[None, :]
@@ -309,47 +446,24 @@ class SandboxManipulation:
             self.plate.set_pos(pos=p)
             self.plate.set_dofs_position(fix_pose, dofs_idx_local=fix_dofs)
             self._scene.step()
-        
-    def _save_sample(self, start_state, action, end_state):
-        # TODO: SAVE
-        pass
-          
-    def build(self):
-        self._scene.build()
-        
-        dofs_idx = [0, 1, 2, 3, 4, 5]
-        self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
-        self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
-        # self.plate.set_mass(0.1)
 
-    def view(self, horizon=1000):
-        for _ in range(horizon):
-            self._scene.visualizer.update()
-    
-    def simulate(self, horizon=1000):
-        for _ in range(horizon):
-            self._scene.step()
-
-    def collect_data_samples(self, n_samples=200, operation_height=None, robot_safety_margin=0.005, step_size=100, v_min=0.02, v_max=0.05, v_lift=0.01):
+    def generate_action_samples(
+            self,
+            n_samples: int,
+            operation_height: float | None = None,
+        ):
         box_x, box_y, _ = self._box_pos
-        _, _, box_height = self._box_vol
-        tool_length, tool_width, tool_height = self._plate_size
-        
+        tool_length, tool_width, tool_height = self._plate_size        
         
         self._operation_height += tool_height/2
         if operation_height is not None:
             self._operation_height = operation_height
-
-        ###################
-        # Action sampling #
-        ###################
         
-        thetas = np.random.uniform(low=-np.pi/2, high=np.pi/2, size=n_samples)   
-        velocities = np.random.uniform(v_min, v_max, size=n_samples)     
+        angles = np.random.uniform(low=-np.pi/2, high=np.pi/2, size=n_samples)
         
         # sampling dimensions in x and y from box center
-        sample_space_x = self._granular_vol[0]/2 - abs(np.cos(thetas) * tool_length/2 + np.sin(thetas) * tool_width/2 + robot_safety_margin)
-        sample_space_y = self._granular_vol[1]/2 - abs(np.sin(thetas) * tool_length/2 + np.cos(thetas) * tool_width/2 + robot_safety_margin)
+        sample_space_x = self._granular_vol[0]/2 - abs(np.cos(angles) * tool_length/2 + np.sin(angles) * tool_width/2 + 2*self._safety_margin)
+        sample_space_y = self._granular_vol[1]/2 - abs(np.sin(angles) * tool_length/2 + np.cos(angles) * tool_width/2 + 2*self._safety_margin)
 
         # Min and max coordinates of action sample areas
         low = np.stack([box_x - sample_space_x, box_y - sample_space_y], axis=1)
@@ -362,72 +476,107 @@ class SandboxManipulation:
         _z = np.ones((n_samples, 1)) * self._operation_height
         action_starts = np.concatenate((start_samples, _z), axis=1)
         action_stops = np.concatenate((stop_samples, _z), axis=1)
+        
+        return zip(action_starts, action_stops, angles)
 
-        
-        for n in range(n_samples):
-            p_start = action_starts[n, :]
-            p_stop = action_stops[n, :]
-            speed = velocities[n]
-            angle = thetas[n]
+    def execute_action(self, p_start, p_stop, angle, speed, lift_height=None):
             
-            state = []
-            if self.material_type == "rsa":
-                for e in self.material:
-                    state.append(np.array(e.get_pos().cpu()))
+        if lift_height == None:
+            lift_height = self._box_vol[2]
+
+        # Lowering
+        # success = self.plate_velocity_translation(
+        #     p_start + np.array([0, 0, lift_height]),
+        #     p_start,
+        #     speed,
+        #     [p_start[0], p_start[1], 0, 0, angle],
+        #     [0, 1, 3, 4, 5],
+        # )
+        # if not success:
+            # print(f"Lowering failed. Skipping.")
+            # self._n_aborted_down +=1
+            # return success
+
+        self.plate_position_translation(
+            p_start + np.array([0, 0, lift_height]),
+            p_start,
+            100,
+            [p_start[0], p_start[1], 0, 0, angle],
+            [0, 1, 3, 4, 5],
+        )
+        
+
+        # Execute Sweeping
+        success = self.plate_velocity_translation(
+            p_start,
+            p_stop,
+            speed,
+            [self._operation_height, 0, 0, angle],
+            [2, 3, 4, 5],
+        )
+        
+        if not success:
+            self._n_aborted_action +=1
+            print(f"Action failed to reach target. Skipping.")
+            return success
+            
+        # Lifting
+        self.plate_position_translation(
+            p_stop,
+            p_stop + np.array([0, 0, lift_height]),
+            100,
+            [p_stop[0], p_stop[1], 0, 0, angle],
+            [0, 1, 3, 4, 5],
+        )
+
+        return success
+
+    def collect_data_samples(
+            self,
+            n_samples=200,
+            operation_height=None,
+            speed=0.125,
+        ):
+        
+        samples = self.generate_action_samples(
+            n_samples,
+            operation_height,
+        )
+        
+        for (p_start, p_stop, angle) in samples:
+
+            state = self.get_material_state()
                     
-            
-            # Lowering
-            success = self._plate_velocity_translation(
-                p_start + np.array([0, 0, box_height]),
-                p_start,
-                speed,
-                [p_start[0], p_start[1], 0, 0, angle],
-                [0, 1, 3, 4, 5],
-            )
-            
-            if not success:
-                print(f"ACTION {n}: Failed to reach target. Skipping.")
-                continue
-            
-            # Execute Sweeping
-            success = self._plate_velocity_translation(
+            if not self.execute_action(
                 p_start,
                 p_stop,
+                angle,
                 speed,
-                [self._operation_height, 0, 0, angle],
-                [2, 3, 4, 5],
-            )
-            
-            if not success:
-                print(f"ACTION {n}: Failed to reach target. Skipping.")
+            ):
                 continue
-                
-            # Lifting
-            self._plate_position_translation(
-                p_stop,
-                p_stop + np.array([0, 0, box_height]),
-                100,
-                [p_stop[0], p_stop[1], 0, 0, angle],
-                [0, 1, 3, 4, 5],
-            )
             
-            if self.material_type == "rsa":
-                moving = 0
-                while moving > 0:
-                    moving = 0
-                    for e in self.material:
-                            v = np.linalg.norm(
-                                np.array(e.get_vel().cpu())
-                            ) 
-                            if v > 0.01:
-                                moving +=1
-                    self._scene.step()
-                    print(f"Action {n}: Number of moving particles: {moving}")
-                print(f"All particles {n} stopped.")
-            
-            state_ = []
-            if self.material_type == "rsa":
-                for e in self.material:
-                    state_.append(np.array(e.get_pos().cpu()))
+            state_ = self.get_material_state()
         
-            self._save_sample(state, (p_start, p_stop, speed, angle), state_)                    
+            self._save_sample((state, state_, p_start, p_stop, angle))    
+        
+        print("\nStatistics")
+        print("==========")
+        print(">> Aborted (lowering): ", self._n_aborted_down)
+        print(">> Aborted (actions) : ", self._n_aborted_action)
+        print(">> Number of samples : ", n_samples)
+
+    def export_data_samples(
+            self,
+            path : str | Path = "training"
+        ):
+
+        base_dir = Path(__file__).parent
+        full_path = base_dir / path
+        Path.mkdir(full_path, parents=True, exist_ok=True)
+
+        n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
+        
+        for n in range(self.num_envs):
+            idx = str(n+n_runs)
+            self._save_config(n, full_path / (idx + "_config.yaml"))
+            self._save_data(n, full_path / (idx + "_data.pkl"))
