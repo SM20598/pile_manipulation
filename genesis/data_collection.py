@@ -14,7 +14,7 @@ from sandbox_manipulation import SandboxManipulation
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
 num_particles = [10, 20, 30]
-num_particles = [30]
+setting = "chickpeas_on_glass"
 
 
 def read_yaml(path : str):
@@ -23,12 +23,12 @@ def read_yaml(path : str):
     with open(full_path) as stream:
         return yaml.safe_load(stream)
 
-config = read_yaml("configs/chickpeas_on_wood.yaml")
+config = read_yaml(f"configs/{setting}.yaml")
 for n_p in num_particles:
     config['sandbox']['material']['properties']['n_particles'] = n_p
       
     sm = SandboxManipulation(config)
     sm.build()
-    sm.collect_data_samples(n_samples=100)
-    sm.export_data_samples("training/cubes")
+    sm.collect_data_samples(n_samples=10)
+    sm.export_data_samples(path=f"data/cubes/{setting}")
     sm.destroy()

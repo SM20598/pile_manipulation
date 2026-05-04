@@ -7,6 +7,7 @@ import quaternion as qu
 from pathlib import Path
 import pickle
 import os
+import torch
 
 class SandboxManipulation:
 
@@ -33,7 +34,6 @@ class SandboxManipulation:
         )
 
         # PARAMETERS FOR TRAINING
-        self.num_envs = self._config["simulation"].get('n_envs', 1)
         self._box_pos = self._config["sandbox"]["box"].get('pos', [0.0, 0.0, 0.0])
         self._box_vol = self._config["sandbox"]["box"].get('vol', [0.3, 0.3, 0.1])
         self._wall_thickness = self._config["sandbox"]["box"].get('wall_thickness', 0.02)
@@ -44,7 +44,7 @@ class SandboxManipulation:
         self._init_scene()
         self._add_entities()
 
-        self._data_samples = {n : [] for n in range(self.num_envs)}
+        self._data_samples = []
         self._n_aborted_down = 0
         self._n_aborted_action = 0
 
@@ -271,47 +271,29 @@ class SandboxManipulation:
 
         self._operation_height = self._box_pos[2] + granular_touch_height + self._wall_thickness/2    
 
-    def _shift_physic_param(self, param : str, entity: list, val: list | np.ndarray):
-
-        if len(val) != self.num_envs:
-            raise ValueError(
-                f"Number of passed values {len(val)} does not match number of environments {self.num_envs}"
-            )
-
-        for e in entity:
-            if param == "mass":
-                e.set_mass_shift(val)
-            elif param == "friction": 
-                e.set_friction(val)
-            else:
-                raise NotImplementedError(f"Shifting {param} is not supported.")
-
     def _save_sample(self, sample):
-        for n in range(self.num_envs):
-            self._data_samples[n].append(sample)        
+        state, state_, action = sample
+
+        self._data_samples.append(
+            {
+                "state" : state,
+                "state_" : state_,
+                "action" : action,
+            }
+        )        
 
     def _save_data(
             self,
-            n : int,
             path : str | Path
     ):
         
         with open(path, 'wb') as handle:
-            pickle.dump(self._data_samples[n], handle, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self._data_samples, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def _save_config(
             self,
-            n : int,
             path : str | Path
         ):
-
-        # add shifts to config export
-        if hasattr(self, '_box_friction_ratio'):
-            self._config['sandbox']['box']['properties']["friction_ratio"] = self._box_friction_ratio[n]
-        if hasattr(self, '_material_mass_shift'):
-            self._config['sandbox']['material']['properties']["mass_shift"] = self._material_mass_shift[n]
-        if hasattr(self, '_material_friction_ratio'):
-            self._config['sandbox']['material']['properties']["friction_ratio"] = self._material_friction_ratio[n]
 
         with open(path, 'w') as outfile:
             try: 
@@ -320,7 +302,7 @@ class SandboxManipulation:
                 print(exc)
        
     def build(self):
-        self._scene.build(self.num_envs, env_spacing=(1.0, 1.0))
+        self._scene.build()
         
         dofs_idx = [0, 1, 2, 3, 4, 5]
         self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
@@ -338,7 +320,7 @@ class SandboxManipulation:
         for _ in range(horizon):
             self._scene.step()
 
-    def set_material_state(self, positions : list | np.ndarray):
+    def set_material_state(self, positions : list):
         """set position of particles"""
         
         if self._material_type != "rsa":
@@ -364,27 +346,27 @@ class SandboxManipulation:
         moving = True
 
         self.plate.set_pos(self.plate.get_pos())
-        self.plate.control_dofs_position_velocity(self.plate.get_pos(), np.zeros((3)), dofs_idx_local=[0, 1, 2])
+        self.plate.control_dofs_position_velocity(self.plate.get_pos(), torch.zeros((3)), dofs_idx_local=[0, 1, 2])
         while moving:
             
-            v = np.zeros((len(self.material), self.num_envs))
+            v = torch.zeros(len(self.material))
             for i, e in enumerate(self.material):
-                v[i, :] = np.linalg.norm(np.array(e.get_vel().cpu()), axis=1)
+                v[i] = torch.linalg.norm(torch.tensor(e.get_vel()), axis=0)
             
-            v_max = np.max(v, axis=0)
-            if (v_max < 0.01).all():
+            if (v < 0.01).all():
                 moving = False
             
             # freeze plate
             self.plate.set_dofs_position(self.plate.get_dofs_position())            
             self._scene.step()
         
-        print(f"All particles stopped.")
-        
-        state = np.zeros((n_p, self.num_envs, 3))
+        state = torch.zeros((n_p, 4))
         for i, e in enumerate(self.material):
-            state[i, :, :] = np.array(e.get_pos().cpu())
-        return np.reshape(state, (self.num_envs, n_p, 3))
+            pos = torch.tensor(e.get_pos())
+            size = e.morph.size[0] # only save on dim for cubes
+            state[i, 0:3] = pos
+            state[i, 3] = size
+        return state
 
     def get_collected_samples(self):
         """
@@ -404,7 +386,7 @@ class SandboxManipulation:
         
         # direction of movement
         delta = p_end - p_start
-        dist = np.linalg.norm(delta)
+        dist = torch.linalg.norm(delta)
         
         # speed
         direction = delta / dist
@@ -415,14 +397,14 @@ class SandboxManipulation:
         self.plate.control_dofs_position_velocity(p_end, v, dofs_idx_local=[0, 1, 2])
                 
         # number of steps to reach target position
-        n_required = int(np.ceil(dist/(speed * self._scene.dt)))
+        n_required = int(torch.ceil(dist/(speed * self._scene.dt)))
         n_current = 0
         reached_goal, abort = False, False
         while not reached_goal and not abort:
             n_current += 1
             self.plate.set_dofs_position(fix_pose, dofs_idx_local=fix_dofs)
             self._scene.step()
-            cur_dist = np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end)
+            cur_dist = torch.linalg.norm(torch.tensor(self.plate.get_pos())-p_end)
             if cur_dist < 0.005:
                 reached_goal = True
             abort = (n_current > n_required*1.5)
@@ -432,13 +414,13 @@ class SandboxManipulation:
             print("Aborted")
         else:
             print("Success")            
-        print(">> Distance at end", np.linalg.norm(np.array(self.plate.get_pos().cpu())-p_end))
+        print(">> Distance at end", torch.linalg.norm(torch.tensor(self.plate.get_pos())-p_end))
     
         return reached_goal
     
     def plate_position_translation(self, p_start, p_end, n_steps, fix_pose, fix_dofs, debug=True):
     
-        t = np.linspace(0, 1, n_steps)
+        t = torch.linspace(0, 1, n_steps)
         path = (1 - t[:, None]) * p_start[None, :] + t[:, None] * p_end[None, :]
                 
         self.plate.set_pos(path[0])
@@ -459,23 +441,23 @@ class SandboxManipulation:
         if operation_height is not None:
             self._operation_height = operation_height
         
-        angles = np.random.uniform(low=-np.pi/2, high=np.pi/2, size=n_samples)
+        angles = (-torch.pi/2) + torch.rand(n_samples) * torch.pi # np.random.uniform(low=-torch.pi/2, high=torch.pi/2, size=n_samples)
         
         # sampling dimensions in x and y from box center
-        sample_space_x = self._granular_vol[0]/2 - abs(np.cos(angles) * tool_length/2 + np.sin(angles) * tool_width/2 + 2*self._safety_margin)
-        sample_space_y = self._granular_vol[1]/2 - abs(np.sin(angles) * tool_length/2 + np.cos(angles) * tool_width/2 + 2*self._safety_margin)
+        sample_space_x = self._granular_vol[0]/2 - abs(torch.cos(angles) * tool_length/2 + torch.sin(angles) * tool_width/2 + 2*self._safety_margin)
+        sample_space_y = self._granular_vol[1]/2 - abs(torch.sin(angles) * tool_length/2 + torch.cos(angles) * tool_width/2 + 2*self._safety_margin)
 
         # Min and max coordinates of action sample areas
-        low = np.stack([box_x - sample_space_x, box_y - sample_space_y], axis=1)
-        high = np.stack([box_x + sample_space_x, box_y + sample_space_y], axis=1)
+        low = torch.stack([box_x - sample_space_x, box_y - sample_space_y], axis=1)
+        high = torch.stack([box_x + sample_space_x, box_y + sample_space_y], axis=1)
         
         
         # Sampling n_samples start and end positions of action  
-        start_samples = np.random.uniform(low=low, high=high, size=(n_samples, 2))
-        stop_samples = np.random.uniform(low=low, high=high, size=(n_samples, 2))
-        _z = np.ones((n_samples, 1)) * self._operation_height
-        action_starts = np.concatenate((start_samples, _z), axis=1)
-        action_stops = np.concatenate((stop_samples, _z), axis=1)
+        start_samples = (high - low) * torch.rand(n_samples, 2) + low # np.random.uniform(low=low, high=high, size=(n_samples, 2))
+        stop_samples = (high - low) * torch.rand(n_samples, 2) + low # np.random.uniform(low=low, high=high, size=(n_samples, 2))
+        _z = torch.ones((n_samples, 1)) * self._operation_height
+        action_starts = torch.concatenate((start_samples, _z), axis=1)
+        action_stops = torch.concatenate((stop_samples, _z), axis=1)
         
         return zip(action_starts, action_stops, angles)
 
@@ -498,7 +480,7 @@ class SandboxManipulation:
             # return success
 
         self.plate_position_translation(
-            p_start + np.array([0, 0, lift_height]),
+            p_start + torch.tensor([0, 0, lift_height]),
             p_start,
             100,
             [p_start[0], p_start[1], 0, 0, angle],
@@ -514,6 +496,8 @@ class SandboxManipulation:
             [self._operation_height, 0, 0, angle],
             [2, 3, 4, 5],
         )
+
+        p_stop = torch.tensor(self.plate.get_pos())
         
         if not success:
             self._n_aborted_action +=1
@@ -523,7 +507,7 @@ class SandboxManipulation:
         # Lifting
         self.plate_position_translation(
             p_stop,
-            p_stop + np.array([0, 0, lift_height]),
+            p_stop + torch.tensor([0, 0, lift_height]),
             100,
             [p_stop[0], p_stop[1], 0, 0, angle],
             [0, 1, 3, 4, 5],
@@ -544,7 +528,6 @@ class SandboxManipulation:
         )
         
         for (p_start, p_stop, angle) in samples:
-
             state = self.get_material_state()
                     
             if not self.execute_action(
@@ -557,7 +540,7 @@ class SandboxManipulation:
             
             state_ = self.get_material_state()
         
-            self._save_sample((state, state_, p_start, p_stop, angle))    
+            self._save_sample((state, state_, (p_start, p_stop, angle))) 
         
         print("\nStatistics")
         print("==========")
@@ -575,8 +558,5 @@ class SandboxManipulation:
         Path.mkdir(full_path, parents=True, exist_ok=True)
 
         n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
-        
-        for n in range(self.num_envs):
-            idx = str(n+n_runs)
-            self._save_config(n, full_path / (idx + "_config.yaml"))
-            self._save_data(n, full_path / (idx + "_data.pkl"))
+        self._save_config(full_path / (str(n_runs) + "_config.yaml"))
+        self._save_data(full_path / (str(n_runs) + "_data.pkl"))

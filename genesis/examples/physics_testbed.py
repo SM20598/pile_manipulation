@@ -77,10 +77,12 @@ def main():
 
 
     ########################## build ##########################
-    scene.build()
+    scene.build(2)
     obj1.set_mass(0.001)
     obj2.set_mass(1)
-    obj1.morph.size = (0.001, 0.001, 0.001)
+    
+    print(obj1.get_pos())
+
     for _ in range(1000):
         scene.step()
 
