@@ -46,7 +46,6 @@ def random_sequential_addition(
     entities = []
     for i in range(n_p):
         r = get_radius(i)
-        print(r)
         placed = False
         
         while not placed and attempts < max_attempts:

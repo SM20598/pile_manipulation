@@ -2,11 +2,11 @@
 simulation:
   dt: 4e-3
   substeps : 10
-  backend : cuda
+  backend : gpu
   precision : '32'
   performance_mode : True
   viewer_options:
-    show_viewer : True
+    show_viewer : False
     viewer_type: "bird"
     camera_fov : 30
     max_FPS: 60
@@ -33,22 +33,3 @@ sandbox:
 
 plate:
   size : [0.04, 0.002, 0.01]
-
-# Statistics
-# ==========
-# >> Aborted (lowering):  13
-# >> Aborted (actions) :  95
-# >> Number of samples :  200
-
-
-# Statistics
-# ==========
-# >> Aborted (lowering):  14
-# >> Aborted (actions) :  107
-# >> Number of samples :  200
-
-# Statistics
-# ==========
-# >> Aborted (lowering):  5
-# >> Aborted (actions) :  124
-# >> Number of samples :  200
