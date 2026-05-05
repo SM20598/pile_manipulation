@@ -1,7 +1,7 @@
 plate:
   size:
   - 0.04
-  - 0.001
+  - 0.002
   - 0.01
 sandbox:
   box:
@@ -13,8 +13,8 @@ sandbox:
     properties:
       friction: 0.15
     vol:
-    - 0.127
-    - 0.127
+    - 0.128
+    - 0.128
     - 0.04
     wall_thickness: 0.02
   material:
@@ -37,7 +37,7 @@ sandbox:
     - 0.05
   safety_margin: 0.005
 simulation:
-  backend: gpu
+  backend: cuda
   dt: 4e-3
   performance_mode: true
   precision: '32'
@@ -47,3 +47,7 @@ simulation:
     max_FPS: 60
     show_viewer: false
     viewer_type: bird
+statistics:
+  n_samples: 2000
+  n_aborted_down: 0
+  n_aborted_action: 1376

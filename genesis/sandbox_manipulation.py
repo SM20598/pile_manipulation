@@ -466,19 +466,6 @@ class SandboxManipulation:
         if lift_height == None:
             lift_height = self._box_vol[2]
 
-        # Lowering
-        # success = self.plate_velocity_translation(
-        #     p_start + np.array([0, 0, lift_height]),
-        #     p_start,
-        #     speed,
-        #     [p_start[0], p_start[1], 0, 0, angle],
-        #     [0, 1, 3, 4, 5],
-        # )
-        # if not success:
-            # print(f"Lowering failed. Skipping.")
-            # self._n_aborted_down +=1
-            # return success
-
         self.plate_position_translation(
             p_start + torch.tensor([0, 0, lift_height]),
             p_start,
@@ -547,6 +534,12 @@ class SandboxManipulation:
         print(">> Aborted (lowering): ", self._n_aborted_down)
         print(">> Aborted (actions) : ", self._n_aborted_action)
         print(">> Number of samples : ", n_samples)
+
+        self._config["statistics"] = {
+            "n_samples": n_samples,
+            "n_aborted_down": self._n_aborted_down,
+            "n_aborted_action": self._n_aborted_action,
+        }
 
     def export_data_samples(
             self,

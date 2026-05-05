@@ -2,11 +2,11 @@
 simulation:
   dt: 4e-3
   substeps : 10
-  backend : gpu
+  backend : cuda
   precision : '32'
   performance_mode : True
   viewer_options:
-    show_viewer : False
+    show_viewer : True
     viewer_type: "bird"
     camera_fov : 30
     max_FPS: 60
@@ -15,7 +15,7 @@ simulation:
 sandbox:
   box:
     pos : [0.0, 0.0, 0.0]
-    vol : [0.127, 0.127, 0.04]
+    vol : [0.128, 0.128, 0.04]
     wall_thickness : 0.02
     omit : False
     properties : 
@@ -32,7 +32,7 @@ sandbox:
   safety_margin : 0.005
 
 plate:
-  size : [0.04, 0.001, 0.01]
+  size : [0.04, 0.002, 0.01]
 
 # Statistics
 # ==========

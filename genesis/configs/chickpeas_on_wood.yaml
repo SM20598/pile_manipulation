@@ -2,7 +2,7 @@
 simulation:
   dt: 4e-3
   substeps : 10
-  backend : gpu
+  backend : cuda
   precision : '32'
   performance_mode : True
   viewer_options:
@@ -21,7 +21,7 @@ sandbox:
     properties : 
       friction : 0.5
   material:
-    vol : [0.12, 0.12, 0.1]
+    vol : [0.12, 0.12, 0.05]
     type : "rsa" 
     properties :
       cubes : True
