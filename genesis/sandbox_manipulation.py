@@ -305,7 +305,7 @@ class SandboxManipulation:
         self._scene.build()
         
         dofs_idx = [0, 1, 2, 3, 4, 5]
-        self.plate.set_dofs_kp((0.3,) * 6, dofs_idx)
+        self.plate.set_dofs_kp((0.7,) * 6, dofs_idx)
         self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
 
     def destroy(self):
