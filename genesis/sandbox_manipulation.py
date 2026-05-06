@@ -284,7 +284,6 @@ class SandboxManipulation:
     def _save_data(
             self,
             path : str | Path,
-            n : int
     ):
         
         states = self.valid_states.cpu()
@@ -719,13 +718,13 @@ class SandboxManipulation:
         print("=" * 50)
         print(f">> Number of environments   : {self._n_envs}")
         print(f">> Samples per environment  : {n_samples}")
-        print(f">> Total samples collected  : {len(write_ptr)}")
+        print(f">> Total samples collected  : {write_ptr}")
         print(f">> Number of failed samples : {max_samples - write_ptr}")
 
         self._config["statistics"] = {
             "Number of environments"   : self._n_envs,
             "Samples per environment"  : n_samples,
-            "Total samples collected"  : len(write_ptr),
+            "Total samples collected"  : write_ptr,
             "Number of failed samples" : max_samples - write_ptr,
         }
 
@@ -735,4 +734,4 @@ class SandboxManipulation:
 
         n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
         self._save_config(full_path / (str(n_runs) + "_config.yaml"))
-        self._save_data(full_path / (str(n_runs) + "_data.pkl"), n_samples=write_ptr)
+        self._save_data(full_path / (str(n_runs) + "_data.pkl"))
