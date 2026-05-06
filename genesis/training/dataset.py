@@ -95,6 +95,7 @@ class PileData(Dataset):
                     int(c_y + plate_y_ - pg_dim/2):int(c_y + plate_y_ + pg_dim/2),
                 ] = torch.from_numpy((rotated > 0.5).astype(int))
 
+
                 from matplotlib import pyplot as plt
                 plt.imshow(a_grid, interpolation='nearest')
                 plt.show()
