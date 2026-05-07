@@ -9,7 +9,7 @@ from scipy.ndimage import rotate
 
 TO_PXL = 1e3
 
-class PileData(Dataset):
+class PileSweepData(Dataset):
 
     def __init__(self, path : str, run : int | None = None):
         
@@ -19,98 +19,219 @@ class PileData(Dataset):
         if run is not None:
             runs = [run]
         else:
-            n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
+            runs = range(sum(entry.is_file() for entry in os.scandir(full_path)) // 2)
 
+        self.samples = []
+        self.configs = []
         for run in runs:
             with open(full_path / f'{run}_data.pkl', 'rb') as f:
-                self.samples = pickle.load(f)
+                self.samples.append(pickle.load(f))
+
             
             with open(full_path / f'{run}_config.yaml', 'r') as f:
-                config = yaml.safe_load(f)
-                
-                x_dim, y_dim, _ = config["sandbox"]["box"]["vol"]
-                x_dim = int(x_dim * TO_PXL)
-                y_dim = int(y_dim * TO_PXL)
-                c_x = round(x_dim/2)
-                c_y = round(x_dim/2)
-                
-                plate_dim_x, plate_dim_y, _ = [round(x * TO_PXL) for x in config["plate"]["size"]]
-            
-            # iterate over all n samples
-            inputs1 = []
-            labels = []
-            for sample in self.samples:
-                particles = sample["state"]
-                particles_ = sample["state_"]
-                plate_p, plate_p_, angle = sample["action"]
+                self.configs.append(yaml.safe_load(f))
+        
+        # lookup tables for sample indexing
+        self._run_lookup = []
+        self._offsets = [0]
+        for r, row in enumerate(self.samples):
+            self._run_lookup.extend([r] * len(row))
+            self._offsets.append(self._offsets[-1] + len(row))
+        
+        # take grid dimensions from first sample
+        x_dim, y_dim, _ = self.configs[0]["sandbox"]["box"]["vol"]
+        x_dim_plt, y_dim_plt, _ = self.configs[0]["plate"]["size"]
+        self._create_grids(x_dim, y_dim, x_dim_plt, y_dim_plt)
+    
+    def __len__(self):
+        return sum(len(x) for x in self.samples)
+    
+    def __getitem__(self, idx : int):
 
-                grid = torch.zeros((x_dim, y_dim))
-                grid_ = torch.zeros((x_dim, y_dim))
-                a_grid = torch.zeros((x_dim, y_dim))
+        r = self._run_lookup[idx]
+        sample = self.samples[r][idx - self._offsets[r]]
+        config = self.configs[r]
 
-                
-                # draw each particles in the grids
-                for p, p_ in zip(particles, particles_):
+        if isinstance(sample, dict):
+            particles = sample["state"]
+            particles_ = sample["state_"]
+            action = sample["action"]
+        else:
+            particles, particles_, action = sample
+        
+        plate_pos, plate_pos_, angle = action
 
-                    x_pos, y_pos, _, len = [x * TO_PXL for x in p]
-                    x_pos_, y_pos_, _, _ = [x * TO_PXL for x in p_]
+        # Update grid dimensions if config is different
+        x_dim_new, y_dim_new, _ = config["sandbox"]["box"]["vol"]
+        x_dim_plt, y_dim_plt, _ = self.configs[0]["plate"]["size"]
 
-                    # draw particle at state(i)
-                    len = len * TO_PXL
-                    x_grid = c_x + x_pos
-                    y_grid = c_y + y_pos
-                    
-                    grid[
-                        int(torch.floor(x_grid - len/2)):int(torch.ceil(x_grid + len/2)),
-                        int(torch.floor(y_grid - len/2)):int(torch.ceil(y_grid + len/2)),
-                       ] = 1
+        if x_dim_new != self._box_dim[0] \
+        or y_dim_new != self._box_dim[1] \
+        or x_dim_plt != self._plt_dim[0] \
+        or y_dim_plt != self._plt_dim[1] :
+            self._create_grids(x_dim_new, y_dim_new, x_dim_plt, y_dim_plt)
+        else:
+            self._clear_grids()
 
-                    # draw particle at state(i+1)
-                    x_grid_ = c_x + x_pos_
-                    y_grid_ = c_y + y_pos_
-                    grid_[
-                        int(torch.floor(x_grid_ - len/2)):int(torch.ceil(x_grid_ + len/2)),
-                        int(torch.floor(y_grid_ - len/2)):int(torch.ceil(y_grid_ + len/2)),
-                       ] = 1
-                
-                # draw plate in a grid
-                pg_dim = max(plate_dim_x, plate_dim_y)
-                plate_x, plate_y, _ = [x * TO_PXL for x in plate_p]
-                plate_x_, plate_y_, _ = [x * TO_PXL for x in plate_p_]
+        particles = particles * TO_PXL
+        particles_ = particles_ * TO_PXL
+        plate_pos = plate_pos * TO_PXL
+        plate_pos_ = plate_pos_ * TO_PXL
 
-                place_grid = torch.zeros((pg_dim, pg_dim))
-                place_grid[
-                    math.floor(pg_dim/2-plate_dim_x/2):math.ceil(pg_dim/2+plate_dim_x/2),
-                    math.floor(pg_dim/2-plate_dim_y/2):math.ceil(pg_dim/2+plate_dim_y/2),
-                ] = 1
-                rotated = rotate(place_grid, angle=torch.rad2deg(angle), reshape=False, order=1)
-                
-                a_grid[
-                    int(c_x + plate_x - pg_dim/2):int(c_x + plate_x + pg_dim/2),
-                    int(c_y + plate_y - pg_dim/2):int(c_y + plate_y + pg_dim/2),
-                ] = torch.from_numpy((rotated > 0.5).astype(int)*0.5)
-                
-                a_grid[
-                    int(c_x + plate_x_ - pg_dim/2):int(c_x + plate_x_ + pg_dim/2),
-                    int(c_y + plate_y_ - pg_dim/2):int(c_y + plate_y_ + pg_dim/2),
-                ] = torch.from_numpy((rotated > 0.5).astype(int))
+        ##################
+        # Draw particles #
+        ##################
+
+        for p, p_ in zip(particles, particles_):
+            p_x, p_y, _, p_r = p
+            p_x_, p_y_, _, p_r_ = p_
+
+            if p_r != p_r_:
+                raise ValueError(f"Particle sizes at state {p_r} and state_ {p_r_} don't match") 
+
+            # Draw particles at state
+            self._color_grid(
+                grid=self._grid,
+                x=p_x + self.ctr[0],
+                y=p_y + self.ctr[1],
+                size=(p_r, p_r),
+                drawing=1
+            )
+
+            # Draw particles at state_
+            self._color_grid(
+                grid=self._grid_,
+                x=p_x_ + self.ctr[0],
+                y=p_y_ + self.ctr[1],
+                size=(p_r_, p_r_),
+                drawing=1
+            )
+        
+        ##############
+        # Draw plate #
+        ##############
+
+        # Draw plate on separate grid
+        self._color_grid(
+            grid=self._plate_grid,
+            x=self._plate_grid.shape[0]/2,
+            y=self._plate_grid.shape[1]/2,
+            size=(x_dim_plt*TO_PXL, y_dim_plt*TO_PXL),
+            drawing=1
+        )
+
+        # rotate grid according to sample angle
+        rotated_plate = rotate(self._plate_grid, angle=torch.rad2deg(angle), reshape=False, order=1)
+
+        # Draw plate at state
+        self._color_grid(
+            grid=self._a_grid,
+            x=self.ctr[0] + plate_pos[0],
+            y=self.ctr[1] + plate_pos[1],
+            size=self._plate_grid.shape,
+            drawing=torch.from_numpy((rotated_plate > 0.5).astype(int)*0.5)
+        )
+
+        # Draw plate at state_
+        self._color_grid(
+            grid=self._a_grid,
+            x=self.ctr[0] + plate_pos_[0],
+            y=self.ctr[1] + plate_pos_[1],
+            size=self._plate_grid.shape,
+            drawing=torch.from_numpy((rotated_plate > 0.5).astype(int))
+        )
+
+        return (self._grid, self._a_grid), self._grid_
 
 
-                from matplotlib import pyplot as plt
-                plt.imshow(a_grid, interpolation='nearest')
-                plt.show()
-                return
+    def plot_grid(self, grid : torch.Tensor) -> None:
+        """Visualize the grid as an image"""
+        from matplotlib import pyplot as plt
+        plt.imshow(grid, interpolation='nearest')
+        plt.show()
+    
+    def _create_grids(self, x_dim, y_dim, x_dim_plt, y_dim_plt) -> None:
+        """create new grid instances"""
+        x_pxl, y_pxl = int(x_dim * TO_PXL), int(y_dim * TO_PXL)
+        plt_pxl = int(max(x_dim_plt, y_dim_plt) * TO_PXL)
 
+        self._grid = torch.zeros((x_pxl, y_pxl))
+        self._grid_ = torch.zeros((x_pxl, y_pxl))
+        self._a_grid = torch.zeros((x_pxl, y_pxl))
+        self._plate_grid = torch.zeros((plt_pxl, plt_pxl))
 
+        self.ctr = (round(x_pxl/2), round(y_pxl/2))
 
+        self._box_dim = (x_dim, y_dim)
+        self._plt_dim = (x_dim_plt, y_dim_plt)
+    
+    def _clear_grids(self):
+        """clear grids"""
+        self._grid *= 0
+        self._grid_ *= 0
+        self._a_grid *= 0
+        self._plate_grid *= 0
 
+    def _color_grid(
+    self,
+    grid: torch.Tensor,
+    x: float,
+    y: float,
+    size: tuple[float, float],
+    drawing: float | torch.Tensor = 1
+    ) -> None:
 
+        h, w = grid.shape[:2]
 
+        x_size = int(round(float(size[0])))
+        y_size = int(round(float(size[1])))
 
+        x0 = int(round(float(x - x_size / 2)))
+        y0 = int(round(float(y - y_size / 2)))
 
+        x1 = x0 + x_size
+        y1 = y0 + y_size
+
+        # Clip to grid bounds
+        gx0 = max(0, x0)
+        gy0 = max(0, y0)
+
+        gx1 = min(h, x1)
+        gy1 = min(w, y1)
+
+        # Nothing visible
+        if gx0 >= gx1 or gy0 >= gy1:
+            return
+
+        target = grid[gx0:gx1, gy0:gy1]
+
+        # Only overwrite zeros in grid
+        mask = (target == 0)
+
+        if isinstance(drawing, torch.Tensor):
+
+            # Corresponding crop inside drawing
+            dx0 = gx0 - x0
+            dy0 = gy0 - y0
+
+            dx1 = dx0 + (gx1 - gx0)
+            dy1 = dy0 + (gy1 - gy0)
+
+            source = drawing[dx0:dx1, dy0:dy1]
+
+            target[mask] = source[mask].to(torch.float)
+
+        else:
+            target[mask] = drawing
+    
 
 def main():
-    dataset = PileData("data/cubes/chickpeas_on_glass/", run=0)
+    dataset = PileSweepData("data/cubes/chickpeas_on_glass/")
+    
+    for i in range(len(dataset)):
+        input, label = dataset[i]
+        # dataset.plot_grid(label)
+
 
 if __name__ == "__main__":
     main()

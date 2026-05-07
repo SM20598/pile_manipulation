@@ -9,7 +9,6 @@ import pickle
 import os
 import torch
 
-torch.manual_seed(0)
 
 class SandboxManipulation:
 
@@ -293,8 +292,11 @@ class SandboxManipulation:
         angles = self.valid_angles.cpu()
 
         data = [
-            (states[i], states_[i], (p_starts[i], p_stops[i], angles[i]))
-            for i in range(states.shape[0])
+            {
+                "state" : states[i],
+                "state_" : states_[i],
+                "action" : (p_starts[i], p_stops[i], angles[i])
+            } for i in range(states.shape[0])
         ]
         with open(path, 'wb') as handle:
             pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)

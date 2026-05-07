@@ -8,14 +8,14 @@ import numpy as np
 import yaml
 from pathlib import Path
 
-# from sandbox_manipulation import SandboxManipulation
-from sandbox_manipulation_single_env import SandboxManipulation
+from sandbox_manipulation import SandboxManipulation
+# from sandbox_manipulation_single_env import SandboxManipulation
 
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
-# num_particles = [0]
-num_particles = [10, 20, 30]
+num_particles = [0]
+# num_particles = [10, 20, 30]
 settings = ["chickpeas_on_glass", "chickpeas_on_wood"]
 
 
@@ -30,8 +30,7 @@ for setting in settings:
     for n_p in num_particles:
         config['sandbox']['material']['properties']['n_particles'] = n_p
         
-        sm = SandboxManipulation(config=config)
+        sm = SandboxManipulation(config=config, n_envs=2)
         sm.build()
-        sm.collect_data_samples(n_samples=2000)
-        sm.export_data_samples(path=f"data/cubes/{setting}")
+        sm.collect_data_samples(n_samples=3, path=f"data/cubes/{setting}")
         sm.destroy()
