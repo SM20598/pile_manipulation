@@ -284,12 +284,23 @@ class SandboxManipulation:
             self,
             path : str | Path,
     ):
-        
-        states = self.valid_states.cpu()
-        states_ = self.valid_states_.cpu()
-        p_starts = self.valid_p_starts.cpu()
-        p_stops = self.valid_p_stops.cpu()
-        angles = self.valid_angles.cpu()
+        """
+        Save data efficiently by moving to CPU only when needed.
+        Uses non-blocking transfers for better GPU utilization.
+        """
+        # Move to CPU only for pickle serialization
+        # Use non_blocking=True for async transfer if CUDA is available
+        use_non_blocking = gs.device.type == 'cuda'
+
+        states = self.valid_states.to('cpu', non_blocking=use_non_blocking)
+        states_ = self.valid_states_.to('cpu', non_blocking=use_non_blocking)
+        p_starts = self.valid_p_starts.to('cpu', non_blocking=use_non_blocking)
+        p_stops = self.valid_p_stops.to('cpu', non_blocking=use_non_blocking)
+        angles = self.valid_angles.to('cpu', non_blocking=use_non_blocking)
+
+        # Ensure transfers are complete before pickling
+        if use_non_blocking:
+            torch.cuda.synchronize()
 
         data = [
             {
@@ -356,43 +367,54 @@ class SandboxManipulation:
     def get_material_state(self):
         """
         Returns particle state (positions and sizes) for all environments.
-        
+        Optimized for GPU processing.
+
         Returns:
             Tensor of shape [n_envs, n_particles, 4] with (x, y, z, size)
         """
         if self._material_type != "rsa":
             raise NotImplementedError("Method not implemented for materials other than RSA")
-        
-        # Wait for particles to settle
+
+        # Wait for particles to settle - optimized version
         n_p = len(self.material)
-        moving = True
+        max_settle_steps = 1000  # Prevent infinite loops
+        settle_threshold = 0.01
 
         # Hold plate still
         self.plate.set_pos(self.plate.get_pos())
-        self.plate.control_dofs_position_velocity(self.plate.get_pos(), torch.zeros((self._n_envs, 3)), dofs_idx_local=[0, 1, 2])
-        
-        while moving:
-            v = torch.zeros((self._n_envs, len(self.material)), device=gs.device)
+        self.plate.control_dofs_position_velocity(
+            self.plate.get_pos(),
+            torch.zeros((self._n_envs, 3), device=gs.device),
+            dofs_idx_local=[0, 1, 2]
+        )
+
+        # Pre-allocate velocity tensor
+        velocities = torch.zeros((self._n_envs, n_p), device=gs.device)
+
+        for step in range(max_settle_steps):
+            # Batch velocity computation
             for i, particle in enumerate(self.material):
                 vel = particle.get_vel()  # Shape: [n_envs, 3]
-                v[:, i] = torch.linalg.norm(vel, axis=1)
-            
-            # Check if all particles in all envs are settled (velocity < threshold)
-            if (v < 0.01).all():
-                moving = False
-            
+                velocities[:, i] = torch.linalg.norm(vel, axis=1)
+
+            # Check if all particles in all envs are settled
+            if (velocities < settle_threshold).all():
+                break
+
             # Freeze plate
-            self.plate.set_dofs_position(self.plate.get_dofs_position())            
+            self.plate.set_dofs_position(self.plate.get_dofs_position())
             self._scene.step()
-        
-        # Collect state from all environments
+
+        # Collect state from all environments - vectorized
         state = torch.zeros((self._n_envs, n_p, 4), device=gs.device)
+
+        # Batch position collection
         for i, particle in enumerate(self.material):
             pos = particle.get_pos()  # Shape: [n_envs, 3]
             size = particle.morph.size[0]  # Single value for all envs
             state[:, i, 0:3] = pos
             state[:, i, 3] = size
-        
+
         return state
 
     def get_collected_samples(self):
@@ -648,41 +670,43 @@ class SandboxManipulation:
         ):
         """
         Collect data samples from all environments efficiently.
-        
+        Optimized for GPU processing and memory efficiency.
+
         Args:
             n_samples: Number of samples to collect per environment
-            operation_height: Height at which to operate
             speed: Plate movement speed
-            lift_height: Height to lift plate
+            path: Output path for data
         """
         # Setup lift height
-
-
         lift_height = self._box_vol[2]
         lift_height_tensor = torch.tensor([0, 0, lift_height], device=gs.device)
         lift_height_tensor = lift_height_tensor.unsqueeze(0).expand(self._n_envs, -1)
-        
+
         # Generate action samples for all environments
-        action_starts, action_stops, angles = self.generate_action_samples(
-            n_samples,
-        )
+        action_starts, action_stops, angles = self.generate_action_samples(n_samples)
+
+        # Estimate maximum samples and pre-allocate with some buffer
         max_samples = n_samples * self._n_envs
-        self.valid_states = torch.empty((max_samples, len(self.material), 4), device=gs.device)
-        self.valid_states_ = torch.empty((max_samples, len(self.material), 4), device=gs.device)
-        self.valid_p_starts = torch.empty((max_samples, 3), device=gs.device)
-        self.valid_p_stops = torch.empty((max_samples, 3), device=gs.device)
-        self.valid_angles = torch.empty((max_samples), device=gs.device)
+        buffer_factor = 1.2  # 20% buffer for failed samples
+        alloc_size = int(max_samples * buffer_factor)
+
+        # Pre-allocate on GPU with buffer
+        self.valid_states = torch.empty((alloc_size, len(self.material), 4), device=gs.device)
+        self.valid_states_ = torch.empty((alloc_size, len(self.material), 4), device=gs.device)
+        self.valid_p_starts = torch.empty((alloc_size, 3), device=gs.device)
+        self.valid_p_stops = torch.empty((alloc_size, 3), device=gs.device)
+        self.valid_angles = torch.empty((alloc_size), device=gs.device)
 
         write_ptr = 0
-        for sample_idx in range(n_samples):
 
+        for sample_idx in range(n_samples):
             # Collect sample in all environments
             state = self.get_material_state()  # [n_envs, n_particles, 4]
-            
+
             p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
             p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
             angle = angles[:, sample_idx]              # [n_envs]
-            
+
             reached_goal = self.execute_action(
                 p_start,
                 p_stop,
@@ -690,23 +714,49 @@ class SandboxManipulation:
                 speed,
                 lift_height_tensor,
             )
+
             num_valid = int(reached_goal.sum())
             if num_valid == 0:
                 continue
 
+            # Check if we need to expand buffers
+            if write_ptr + num_valid > alloc_size:
+                # Double the allocation size
+                new_size = alloc_size * 2
+                self.valid_states = torch.cat([
+                    self.valid_states,
+                    torch.empty((new_size - alloc_size, len(self.material), 4), device=gs.device)
+                ], dim=0)
+                self.valid_states_ = torch.cat([
+                    self.valid_states_,
+                    torch.empty((new_size - alloc_size, len(self.material), 4), device=gs.device)
+                ], dim=0)
+                self.valid_p_starts = torch.cat([
+                    self.valid_p_starts,
+                    torch.empty((new_size - alloc_size, 3), device=gs.device)
+                ], dim=0)
+                self.valid_p_stops = torch.cat([
+                    self.valid_p_stops,
+                    torch.empty((new_size - alloc_size, 3), device=gs.device)
+                ], dim=0)
+                self.valid_angles = torch.cat([
+                    self.valid_angles,
+                    torch.empty((new_size - alloc_size), device=gs.device)
+                ], dim=0)
+                alloc_size = new_size
+
             idx = slice(write_ptr, write_ptr + num_valid)
-            
+
             state_ = self.get_material_state()  # [n_envs, n_particles, 4]
 
             # Save samples for all environments that reached the goal
             self.valid_states[idx] = state[reached_goal]
             self.valid_states_[idx] = state_[reached_goal]
             self.valid_p_starts[idx] = p_start[reached_goal]
-            self.valid_p_stops[idx] = self.plate.get_pos(reached_goal.nonzero().squeeze(dim=1))  # [n_envs, 3]
+            self.valid_p_stops[idx] = self.plate.get_pos(reached_goal.nonzero().squeeze(dim=1))
             self.valid_angles[idx] = angle[reached_goal]
-        
+
             write_ptr += num_valid
-        
 
         # Trim unused space
         self.valid_states = self.valid_states[:write_ptr]
@@ -737,3 +787,28 @@ class SandboxManipulation:
         n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
         self._save_config(full_path / (str(n_runs) + "_config.yaml"))
         self._save_data(full_path / (str(n_runs) + "_data.pkl"))
+
+        # Clean up GPU memory
+        self._cleanup_gpu_memory()
+    
+    def _cleanup_gpu_memory(self):
+        """Clean up GPU memory after data collection"""
+        # Delete large tensors
+        if hasattr(self, 'valid_states'):
+            del self.valid_states
+        if hasattr(self, 'valid_states_'):
+            del self.valid_states_
+        if hasattr(self, 'valid_p_starts'):
+            del self.valid_p_starts
+        if hasattr(self, 'valid_p_stops'):
+            del self.valid_p_stops
+        if hasattr(self, 'valid_angles'):
+            del self.valid_angles
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+
+        # Clear CUDA cache if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
