@@ -14,8 +14,8 @@ from sandbox_manipulation import SandboxManipulation
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
-num_particles = [0]
-# num_particles = [10, 20, 30]
+# num_particles = [0]
+num_particles = [40, 50]
 settings = ["chickpeas_on_glass", "chickpeas_on_wood"]
 
 
@@ -32,5 +32,5 @@ for setting in settings:
         
         sm = SandboxManipulation(config=config, n_envs=2)
         sm.build()
-        sm.collect_data_samples(n_samples=3, path=f"data/cubes/{setting}")
+        sm.collect_data_samples(n_samples=100, path=f"data/cubes/{setting}")
         sm.destroy()

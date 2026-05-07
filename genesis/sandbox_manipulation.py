@@ -698,8 +698,8 @@ class SandboxManipulation:
         self.valid_angles = torch.empty((alloc_size), device=gs.device)
 
         write_ptr = 0
-
         for sample_idx in range(n_samples):
+            print(sample_idx)
             # Collect sample in all environments
             state = self.get_material_state()  # [n_envs, n_particles, 4]
 
