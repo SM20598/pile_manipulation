@@ -7,7 +7,7 @@ simulation:
   performance_mode : True
   viewer_options:
     show_viewer : False
-    viewer_type: "bird"
+    viewer_type: None
     camera_fov : 30
     max_FPS: 60
 
