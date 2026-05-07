@@ -116,8 +116,8 @@ class SandboxManipulation:
             viewer_options = self._viewer_options,
             vis_options=gs.options.VisOptions(
                 show_link_frame=viz_settings.get('show_link_frame', False),
-            ),
-            show_viewer=viewer_settings.get('show_viewer', False)
+            ) if self._viewer_options is not None else None,
+            show_viewer=viewer_settings.get('show_viewer', False) if self._viewer_options is not None else False,
         )
         self._scene.profiling_options.show_FPS = viz_settings.get('show_FPS', False)
     

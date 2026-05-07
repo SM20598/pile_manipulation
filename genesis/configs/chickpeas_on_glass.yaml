@@ -2,7 +2,7 @@
 simulation:
   dt: 4e-3
   substeps : 10
-  backend : gpu
+  backend : cpu
   precision : '32'
   performance_mode : True
   viewer_options:
