@@ -1,8 +1,8 @@
 # SIMULATOR SETTINGS
 simulation:
   dt: 4e-3
-  substeps : 10
-  backend : cpu
+  substeps : 2
+  backend : gpu
   precision : '32'
   performance_mode : True
   viewer_options:
@@ -10,6 +10,15 @@ simulation:
     viewer_type: None
     camera_fov : 30
     max_FPS: 60
+
+rigid_options:
+  iterations: 10
+  ls_iterations: 10
+  tolerance: 1e-4
+  ls_tolerance: 0.05
+  box_box_detection: True
+  use_contact_island: True
+  use_hibernation: False
 
 
 sandbox:
