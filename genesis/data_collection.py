@@ -13,8 +13,8 @@ from sandbox_manipulation import SandboxManipulation
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
-DEFAULT_NUM_PARTICLES = [40, 50]
-DEFAULT_SETTINGS = ["chickpeas_on_glass", "chickpeas_on_wood"]
+DEFAULT_NUM_PARTICLES = [10, 20, 30, 40, 50]
+DEFAULT_SETTINGS = ["chickspheres_on_glass"] #"chickspheres_on_wood", "chickcubes_on_glass", "chickcubes_on_wood"]
 
 
 def read_yaml(path: str):
@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument("--samples-per-env", type=int, default=1000)
     parser.add_argument("--backend", choices=["gpu", "cpu"], default="gpu")
     parser.add_argument("--speed", type=float, default=0.125)
-    parser.add_argument("--output-root", default="data/cubes")
+    parser.add_argument("--output-root", default="data/chickpeas")
     parser.add_argument("--settle-steps", type=int, default=None)
     parser.add_argument("--sweep-steps", type=int, default=None)
     parser.add_argument("--progress-interval", type=int, default=1)
@@ -69,17 +69,22 @@ def main():
 
         for n_p in args.num_particles:
             config = copy.deepcopy(base_config)
+            config.setdefault("simulation", {})
             config["simulation"]["backend"] = args.backend
             config["simulation"]["performance_mode"] = True
             if args.substeps is not None:
                 config["simulation"]["substeps"] = args.substeps
+
             viewer_options = config["simulation"].setdefault("viewer_options", {})
             viewer_options["show_viewer"] = args.show_viewer
             if args.viewer_type is not None:
                 viewer_options["viewer_type"] = args.viewer_type
+
+            config.setdefault("sandbox", {}).setdefault("material", {}).setdefault("properties", {})
             config["sandbox"]["material"]["properties"]["n_particles"] = n_p
             if args.particle_shape != "config":
                 config["sandbox"]["material"]["properties"]["cubes"] = args.particle_shape == "cube"
+
             config.setdefault("data_collection", {})
             config["data_collection"]["progress"] = not args.quiet_progress
             config["data_collection"]["sample_progress_interval"] = args.progress_interval

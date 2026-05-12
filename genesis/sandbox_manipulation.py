@@ -55,7 +55,7 @@ class SandboxManipulation:
         self._settle_threshold = collection_cfg.get("settle_threshold", 0.01)
         self._lower_steps = collection_cfg.get("lower_steps", 100)
         self._lift_steps = collection_cfg.get("lift_steps", 100)
-        self._goal_threshold = collection_cfg.get("goal_threshold", 0.002)
+        self._goal_threshold = collection_cfg.get("goal_threshold", 0.001)
         self._progress = collection_cfg.get("progress", True)
         self._sample_progress_interval = max(1, collection_cfg.get("sample_progress_interval", 1))
         self._phase_progress_interval = max(1, collection_cfg.get("phase_progress_interval", 100))
@@ -344,32 +344,53 @@ class SandboxManipulation:
             path : str | Path,
     ):
         """
-        Save data efficiently by moving to CPU only when needed.
-        Uses non-blocking transfers for better GPU utilization.
-        """
-        # Move to CPU only for pickle serialization
-        # Use non_blocking=True for async transfer if CUDA is available
-        use_non_blocking = gs.device.type == 'cuda'
+        Save data in the legacy list-of-dicts pickle format.
 
-        states = self.valid_states.to('cpu', non_blocking=use_non_blocking)
-        states_ = self.valid_states_.to('cpu', non_blocking=use_non_blocking)
-        p_starts = self.valid_p_starts.to('cpu', non_blocking=use_non_blocking)
-        p_stops = self.valid_p_stops.to('cpu', non_blocking=use_non_blocking)
-        angles = self.valid_angles.to('cpu', non_blocking=use_non_blocking)
+        Each row is cloned before pickling. Indexing a large tensor produces a
+        view, and pickling many views can serialize much more backing storage
+        than the row itself needs.
+        """
+        path = Path(path)
+        use_non_blocking = any(
+            tensor.is_cuda
+            for tensor in (
+                self.valid_states,
+                self.valid_states_,
+                self.valid_p_starts,
+                self.valid_p_stops,
+                self.valid_angles,
+            )
+        )
+
+        states = self.valid_states.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
+        states_ = self.valid_states_.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
+        p_starts = self.valid_p_starts.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
+        p_stops = self.valid_p_stops.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
+        angles = self.valid_angles.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
 
         # Ensure transfers are complete before pickling
         if use_non_blocking:
             torch.cuda.synchronize()
 
+        raw_bytes = sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (states, states_, p_starts, p_stops, angles)
+        )
+        self._log(
+            f"Saving {states.shape[0]} samples to {path.name} "
+            f"({raw_bytes / 1024**2:.1f} MiB raw tensors)"
+        )
+
         data = [
             {
-                "state" : states[i],
-                "state_" : states_[i],
-                "action" : (p_starts[i], p_stops[i], angles[i])
+                "state" : states[i].clone(),
+                "state_" : states_[i].clone(),
+                "action" : (p_starts[i].clone(), p_stops[i].clone(), angles[i].clone())
             } for i in range(states.shape[0])
         ]
         with open(path, 'wb') as handle:
             pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        self._log(f"Saved {path.name} ({path.stat().st_size / 1024**2:.1f} MiB on disk)")
 
     def _save_config(
             self,
@@ -525,7 +546,7 @@ class SandboxManipulation:
             self._log(f"  {progress_label}: settling {settle_steps} steps")
 
         # Hold plate still
-        self.plate.set_pos(self.plate.get_pos(), skip_forward=True)
+        self.plate.set_pos(self.plate.get_pos())
         self.plate.control_dofs_position_velocity(
             self.plate.get_pos(),
             torch.zeros((self._n_envs, 3), device=gs.device),
@@ -622,7 +643,7 @@ class SandboxManipulation:
         v = direction * speed  # [n_envs, 3]
 
         # Set initial position, velocity and goal for all plates in all environments
-        self.plate.set_pos(p_start, skip_forward=True)
+        self.plate.set_pos(p_start)
         self.plate.control_dofs_position_velocity(p_end, v, dofs_idx_local=[0, 1, 2])
         
         if sweep_steps is None:
@@ -638,7 +659,33 @@ class SandboxManipulation:
         if progress_label:
             self._log(f"  {progress_label}: sweeping {sweep_steps} steps")
 
+        reached_goal = torch.zeros(self._n_envs, dtype=torch.bool, device=gs.device)
+        best_dist = torch.full((self._n_envs,), torch.inf, device=gs.device)
+        frozen_pos = self.plate.get_pos()
+
         for step in range(sweep_steps):
+            if reached_goal.any():
+                reached_envs_idx = reached_goal.nonzero().squeeze(dim=1)
+                n_reached = reached_envs_idx.shape[0]
+                self.plate.set_pos(
+                    frozen_pos[reached_goal],
+                    envs_idx=reached_envs_idx,
+                    zero_velocity=True,
+                )
+                self.plate.set_dofs_position(
+                    torch.stack([
+                        frozen_pos[reached_goal, 0],
+                        frozen_pos[reached_goal, 1],
+                        torch.full((n_reached,), operation_height, device=gs.device),
+                        torch.zeros(n_reached, device=gs.device),
+                        torch.zeros(n_reached, device=gs.device),
+                        angle[reached_goal],
+                    ], dim=1),
+                    dofs_idx_local=[0, 1, 2, 3, 4, 5],
+                    envs_idx=reached_envs_idx,
+                    zero_velocity=True,
+                )
+
             self.plate.set_dofs_position(
                 fix_z_and_rot,
                 dofs_idx_local=[2, 3, 4, 5],
@@ -646,11 +693,26 @@ class SandboxManipulation:
             self._step_scene(progress_label, step + 1, sweep_steps)
             self._log_step_progress(progress_label, step + 1, sweep_steps)
 
-        final_pos = self.plate.get_pos()
-        cur_dist = torch.linalg.norm(final_pos[:, :2] - p_end[:, :2], axis=1)
-        reached_goal = cur_dist < self._goal_threshold
+            cur_pos = self.plate.get_pos()
+            cur_dist = torch.linalg.norm(cur_pos[:, :2] - p_end[:, :2], axis=1)
+            improved = cur_dist < best_dist
+            best_dist = torch.where(improved, cur_dist, best_dist)
+            newly_reached = (cur_dist < self._goal_threshold) & ~reached_goal
+            frozen_pos = torch.where(newly_reached[:, None], cur_pos, frozen_pos)
+            reached_goal |= newly_reached
+            if reached_goal.all():
+                if progress_label:
+                    self._log(f"  {progress_label}: all environments reached target at step {step + 1}")
+                break
 
-        print("Current Distance:", cur_dist.cpu().numpy())
+        final_pos = torch.where(reached_goal[:, None], frozen_pos, self.plate.get_pos())
+
+        if progress_label:
+            self._log(
+                f"  {progress_label}: reached {int(reached_goal.sum().item())}/{self._n_envs}; "
+                f"best distance range {float(best_dist.min().item()):.4f}-"
+                f"{float(best_dist.max().item()):.4f}m"
+            )
 
         if progress_label:
             self._log(f"  {progress_label}: done in {time.monotonic() - start_time:.1f}s")
@@ -693,9 +755,9 @@ class SandboxManipulation:
         if progress_label:
             self._log(f"  {progress_label}: moving {n_steps} steps")
 
-        self.plate.set_pos(path[0], skip_forward=True)
+        self.plate.set_pos(path[0])
         for i in range(n_steps):
-            self.plate.set_pos(pos=path[i], skip_forward=True)
+            self.plate.set_pos(pos=path[i])
             self.plate.set_dofs_position(fix_pose, dofs_idx_local=fix_dofs)
             self._step_scene(progress_label, i + 1, n_steps)
             self._log_step_progress(progress_label, i + 1, n_steps)
@@ -832,6 +894,31 @@ class SandboxManipulation:
             speed: Plate movement speed
             path: Output path for data
         """
+        effective_settle_steps = self._settle_steps if settle_steps is None else settle_steps
+        effective_sweep_steps = sweep_steps
+
+        self._config.setdefault("data_collection", {})
+        self._config["data_collection"].update({
+            "n_envs": self._n_envs,
+            "samples_per_env": n_samples,
+            "speed": speed,
+            "settle_steps": effective_settle_steps,
+            "sweep_steps": effective_sweep_steps,
+            "sweep_steps_mode": "auto" if effective_sweep_steps is None else "fixed",
+            "lower_steps": self._lower_steps,
+            "lift_steps": self._lift_steps,
+            "goal_threshold": self._goal_threshold,
+            "progress": self._progress,
+            "sample_progress_interval": self._sample_progress_interval,
+            "phase_progress_interval": self._phase_progress_interval,
+            "trace_scene_steps": self._trace_scene_steps,
+            "update_visualizer": self._update_visualizer,
+            "settle_stabilization": self._settle_stabilization,
+            "settle_angular_damping": self._settle_angular_damping,
+            "settle_linear_damping": self._settle_linear_damping,
+            "settle_sleep_threshold": self._settle_sleep_threshold,
+        })
+
         collection_start = time.monotonic()
         self._log(
             f"Preparing collection: n_envs={self._n_envs}, samples_per_env={n_samples}, "
@@ -876,7 +963,7 @@ class SandboxManipulation:
                 self._log(f"Collecting action {batch_label}")
 
             state = self.get_material_state(
-                settle_steps=settle_steps,
+                settle_steps=effective_settle_steps,
                 progress_label=f"{batch_label} pre-state" if should_log_batch else None,
             )
 
@@ -890,13 +977,13 @@ class SandboxManipulation:
                 angle,
                 speed,
                 lift_height_tensor,
-                sweep_steps=sweep_steps,
+                sweep_steps=effective_sweep_steps,
                 progress_label=batch_label if should_log_batch else None,
             )
 
             states[sample_idx] = state
             states_[sample_idx] = self.get_material_state(
-                settle_steps=settle_steps,
+                settle_steps=effective_settle_steps,
                 progress_label=f"{batch_label} post-state" if should_log_batch else None,
             )
             p_starts[sample_idx] = p_start
@@ -935,9 +1022,9 @@ class SandboxManipulation:
         Path.mkdir(full_path, parents=True, exist_ok=True)
 
         n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
-        self._log(f"Saving run {n_runs} to {full_path}...")
         self._save_config(full_path / (str(n_runs) + "_config.yaml"))
         self._save_data(full_path / (str(n_runs) + "_data.pkl"))
+        self._log(f"Saving run {n_runs} to {full_path}. Run has number {n_runs}.")
         self._log(f"Collection complete in {time.monotonic() - collection_start:.1f}s")
 
         # Clean up GPU memory
