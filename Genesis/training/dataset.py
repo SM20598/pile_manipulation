@@ -27,8 +27,6 @@ class PileSweepData(Dataset):
                 for f in os.listdir(full_path)
                 if f.endswith('_data.pkl')
             ])
-            for run in runs:
-                print(run)
 
         self.samples = []
         self.configs = []
@@ -132,7 +130,7 @@ class PileSweepData(Dataset):
 
         # Draw plate at state
         self._color_grid(
-            grid=self._a_grid,
+            grid=self._grid[1],
             x=self.ctr[0] + plate_pos[0],
             y=self.ctr[1] + plate_pos[1],
             size=self._base_plate_grid.shape,
@@ -141,14 +139,14 @@ class PileSweepData(Dataset):
 
         # Draw plate at state_
         self._color_grid(
-            grid=self._a_grid,
+            grid=self._grid[1],
             x=self.ctr[0] + plate_pos_[0],
             y=self.ctr[1] + plate_pos_[1],
             size=self._base_plate_grid.shape,
             drawing=(rotated_plate > 0.5).float()
         )
 
-        return (self._grid, self._a_grid), self._grid_
+        return self._grid, self._grid_
 
 
     def _draw_particles_vectorized(self, particles, particles_, ctr):
@@ -174,7 +172,7 @@ class PileSweepData(Dataset):
         # Draw particles at state
         for i in range(len(particles)):
             self._color_grid(
-                grid=self._grid,
+                grid=self._grid[0],
                 x=p_x[i] + ctr[0],
                 y=p_y[i] + ctr[1],
                 size=(p_r[i], p_r[i]),
@@ -247,9 +245,8 @@ class PileSweepData(Dataset):
         x_pxl, y_pxl = int(x_dim * TO_PXL), int(y_dim * TO_PXL)
         plt_pxl = int(max(x_dim_plt, y_dim_plt) * TO_PXL)
 
-        self._grid = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
+        self._grid = torch.zeros((2, x_pxl, y_pxl), dtype=torch.float32)
         self._grid_ = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
-        self._a_grid = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
         self._plate_grid = torch.zeros((plt_pxl, plt_pxl), dtype=torch.float32)
 
         self.ctr = (round(x_pxl/2), round(y_pxl/2))
@@ -261,17 +258,16 @@ class PileSweepData(Dataset):
         """clear grids efficiently"""
         self._grid.zero_()
         self._grid_.zero_()
-        self._a_grid.zero_()
         self._plate_grid.zero_()
 
     def _color_grid(
-    self,
-    grid: torch.Tensor,
-    x: float,
-    y: float,
-    size: tuple[float, float],
-    drawing: float | torch.Tensor = 1
-    ) -> None:
+            self,
+            grid: torch.Tensor,
+            x: float,
+            y: float,
+            size: tuple[float, float],
+            drawing: float | torch.Tensor = 1
+        ) -> None:
 
         h, w = grid.shape[:2]
 
@@ -320,9 +316,9 @@ def main():
     for i in range(len(dataset)):
         print(i)
         input, label = dataset[i]
-        # dataset.plot_grid(input[0])  # Plot particle grid
-        # dataset.plot_grid(input[1])  # Plot action grid
-        # dataset.plot_grid(label)     # Plot next state grid
+        dataset.plot_grid(input[0])  # Plot particle grid
+        dataset.plot_grid(input[1])  # Plot action grid
+        dataset.plot_grid(label)     # Plot next state grid
 
 
 if __name__ == "__main__":

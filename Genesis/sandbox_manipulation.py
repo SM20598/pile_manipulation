@@ -739,12 +739,12 @@ class SandboxManipulation:
             fix_dofs: Indices of DOFs to lock
         """
         # Ensure batch dimensions
-        if p_start.shape[0] != self._n_envs:
-            p_start = p_start.unsqueeze(0).expand(self._n_envs, -1)
-        if p_end.shape[0] != self._n_envs:
-            p_end = p_end.unsqueeze(0).expand(self._n_envs, -1)
-        if len(fix_pose.shape) == 1:
-            fix_pose = fix_pose.unsqueeze(0).expand(self._n_envs, -1)
+        # if p_start.shape[0] != self._n_envs:
+        #     p_start = p_start.unsqueeze(0).expand(self._n_envs, -1)
+        # if p_end.shape[0] != self._n_envs:
+        #     p_end = p_end.unsqueeze(0).expand(self._n_envs, -1)
+        # if len(fix_pose.shape) == 1:
+        #     fix_pose = fix_pose.unsqueeze(0).expand(self._n_envs, -1)
         
         t = torch.linspace(0, 1, n_steps, device=gs.device)
         # Create interpolated path for all environments
