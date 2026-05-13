@@ -13,8 +13,8 @@ from sandbox_manipulation import SandboxManipulation
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
-DEFAULT_NUM_PARTICLES = [50]
-DEFAULT_SETTINGS = ["chickspheres_on_glass", "chickspheres_on_wood"] # "chickcubes_on_glass", "chickcubes_on_wood"]
+DEFAULT_NUM_PARTICLES = [10, 20, 30]
+DEFAULT_SETTINGS = ["chickspheres_on_wood"] # "chickcubes_on_glass", "chickcubes_on_wood"]
 
 
 def read_yaml(path: str):
