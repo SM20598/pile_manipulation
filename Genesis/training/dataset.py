@@ -17,6 +17,8 @@ class PileSweepData(Dataset):
         parentpath = Path(__file__).parent.parent
         full_path = parentpath / path  # Adjust path as needed
         
+        print(os.walk(full_path))
+
         if run is not None:
             runs = [
                 (full_path / f'{run}_data.pkl', full_path / f'{run}_config.yaml')
