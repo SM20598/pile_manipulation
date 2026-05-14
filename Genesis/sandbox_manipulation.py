@@ -452,32 +452,176 @@ class SandboxManipulation:
 
     def shuffle_particles(self):
         """
-        Randomize particle positions within the box bounds across all environments.
-        Uses vectorized GPU operations for efficiency during training.
+        Randomize particle positions within the box bounds across all environments
+        without particle-particle overlap.
+
+        Particles are placed largest-first. Each step samples a batch of candidate
+        positions per environment and accepts the first candidate that clears the
+        already-placed particles. This keeps the expensive overlap test vectorized
+        on the active device while avoiding the long tail of scalar RSA loops.
         """
         if self._material_type != "rsa":
             raise NotImplementedError("Method not implemented for materials other than RSA")
 
-        # Generate random positions within box bounds (vectorized on GPU)
         n_particles = len(self.material)
-        box_vol = torch.tensor(self._box_vol, dtype=torch.float32, device=gs.device)
-        box_pos = torch.tensor(self._box_pos, dtype=torch.float32, device=gs.device)
-        
-        # Generate random positions: [n_envs, n_particles, 3]
-        # Uniform random in [-box_vol/2, box_vol/2] + box_pos
-        positions = torch.rand(
-            (self._n_envs, n_particles, 3), device=gs.device
-        ) * box_vol.unsqueeze(0).unsqueeze(0) + (box_pos - box_vol / 2).unsqueeze(0).unsqueeze(0)
-        
-        # Validate particle count
-        if positions.shape[1] != len(self.material):
-            raise ValueError(
-                f"Expected {len(self.material)} particles, got {positions.shape[1]}"
-            )
+        if n_particles == 0:
+            return
+
+        if self._particle_sizes is None:
+            self._cache_particle_sizes()
+
+        half_extents = []
+        collision_radii = []
+        for particle in self.material:
+            if hasattr(particle.morph, "size"):
+                size = torch.as_tensor(particle.morph.size, dtype=torch.float32, device=gs.device)
+                if size.ndim == 0:
+                    size = size.repeat(3)
+                half_extent = size[:3] * 0.5
+                collision_radius = torch.linalg.norm(half_extent)
+            else:
+                collision_radius = torch.tensor(float(particle.morph.radius), device=gs.device)
+                half_extent = collision_radius.repeat(3)
+            half_extents.append(half_extent)
+            collision_radii.append(collision_radius)
+        half_extents = torch.stack(half_extents)
+        collision_radii = torch.stack(collision_radii)
+        wall_thickness = float(self._wall_thickness)
+
+        inner_min = torch.tensor(
+            [
+                self._box_pos[0] - self._box_vol[0] * 0.5,
+                self._box_pos[1] - self._box_vol[1] * 0.5,
+                self._box_pos[2] + wall_thickness * 0.5,
+            ],
+            dtype=torch.float32,
+            device=gs.device,
+        )
+        inner_max = torch.tensor(
+            [
+                self._box_pos[0] + self._box_vol[0] * 0.5,
+                self._box_pos[1] + self._box_vol[1] * 0.5,
+                self._box_pos[2] + self._box_vol[2] - wall_thickness * 0.5,
+            ],
+            dtype=torch.float32,
+            device=gs.device,
+        )
+
+        lower = inner_min.unsqueeze(0) + half_extents
+        upper = inner_max.unsqueeze(0) - half_extents
+        if (upper < lower).any():
+            raise ValueError("At least one particle is too large to fit inside the box.")
+
+        positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
+        placed_mask = torch.zeros((n_particles,), dtype=torch.bool, device=gs.device)
+        order = torch.argsort(collision_radii, descending=True)
+        candidate_batch = max(64, min(512, 16 * n_particles))
+        max_rounds = 16
+
+        for particle_idx_tensor in order:
+            particle_idx = int(particle_idx_tensor.item())
+            active_envs = torch.ones((self._n_envs,), dtype=torch.bool, device=gs.device)
+            particle_lower = lower[particle_idx]
+            particle_span = upper[particle_idx] - particle_lower
+
+            for _ in range(max_rounds):
+                active_idx = torch.nonzero(active_envs, as_tuple=False).squeeze(1)
+                if active_idx.numel() == 0:
+                    break
+
+                candidates = (
+                    torch.rand((active_idx.numel(), candidate_batch, 3), device=gs.device)
+                    * particle_span.view(1, 1, 3)
+                    + particle_lower.view(1, 1, 3)
+                )
+
+                placed_idx = torch.nonzero(placed_mask, as_tuple=False).squeeze(1)
+                if placed_idx.numel() == 0:
+                    valid = torch.ones(
+                        (active_idx.numel(), candidate_batch),
+                        dtype=torch.bool,
+                        device=gs.device,
+                    )
+                else:
+                    placed_positions = positions[active_idx][:, placed_idx, :]
+                    min_dist = collision_radii[particle_idx] + collision_radii[placed_idx]
+                    delta = candidates.unsqueeze(2) - placed_positions.unsqueeze(1)
+                    dist2 = torch.sum(delta * delta, dim=-1)
+                    valid = (dist2 >= (min_dist * min_dist).view(1, 1, -1)).all(dim=2)
+
+                has_valid = valid.any(dim=1)
+                if has_valid.any():
+                    accepted_envs = active_idx[has_valid]
+                    first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
+                    positions[accepted_envs, particle_idx, :] = candidates[has_valid, first_valid, :]
+                    active_envs[accepted_envs] = False
+
+            if active_envs.any():
+                self._fill_unplaced_particle_from_lattice(
+                    positions=positions,
+                    placed_mask=placed_mask,
+                    particle_idx=particle_idx,
+                    active_envs=active_envs,
+                    collision_radii=collision_radii,
+                    inner_min=inner_min,
+                    inner_max=inner_max,
+                )
+
+            placed_mask[particle_idx] = True
 
         envs_idx = torch.arange(self._n_envs, device=gs.device)
         for particle_idx, particle in enumerate(self.material):
             particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
+
+    def _fill_unplaced_particle_from_lattice(
+        self,
+        positions: torch.Tensor,
+        placed_mask: torch.Tensor,
+        particle_idx: int,
+        active_envs: torch.Tensor,
+        collision_radii: torch.Tensor,
+        inner_min: torch.Tensor,
+        inner_max: torch.Tensor,
+    ):
+        """Fallback placement with guaranteed non-overlap if a max-radius grid fits."""
+        max_radius = torch.max(collision_radii)
+        pitch = 2.0 * max_radius
+        grid_min = inner_min + max_radius
+        grid_max = inner_max - max_radius
+        counts = torch.floor((grid_max - grid_min) / pitch).to(torch.int64) + 1
+
+        if (counts <= 0).any() or torch.prod(counts).item() < len(self.material):
+            raise RuntimeError(
+                "Could not place all particles without overlap. "
+                "The box is too dense for the configured particle sizes."
+            )
+
+        xs = grid_min[0] + torch.arange(int(counts[0].item()), device=gs.device, dtype=torch.float32) * pitch
+        ys = grid_min[1] + torch.arange(int(counts[1].item()), device=gs.device, dtype=torch.float32) * pitch
+        zs = grid_min[2] + torch.arange(int(counts[2].item()), device=gs.device, dtype=torch.float32) * pitch
+        grid = torch.cartesian_prod(xs, ys, zs)
+
+        placed_idx = torch.nonzero(placed_mask, as_tuple=False).squeeze(1)
+        active_idx = torch.nonzero(active_envs, as_tuple=False).squeeze(1)
+        for env_idx_tensor in active_idx:
+            env_idx = int(env_idx_tensor.item())
+            if placed_idx.numel() > 0:
+                delta = grid.unsqueeze(1) - positions[env_idx, placed_idx, :].unsqueeze(0)
+                dist2 = torch.sum(delta * delta, dim=-1)
+                min_dist = collision_radii[particle_idx] + collision_radii[placed_idx]
+                valid = (dist2 >= (min_dist * min_dist).view(1, -1)).all(dim=1)
+                valid_grid = grid[valid]
+            else:
+                valid_grid = grid
+
+            if valid_grid.shape[0] == 0:
+                raise RuntimeError(
+                    "Could not place all particles without overlap. "
+                    "The box is too dense for the configured particle sizes."
+                )
+
+            choice = torch.randint(valid_grid.shape[0], (1,), device=gs.device).item()
+            positions[env_idx, particle_idx, :] = valid_grid[choice]
 
     def _get_particle_positions(self):
         if self._particle_links_idx is not None:
@@ -955,7 +1099,7 @@ class SandboxManipulation:
         success_mask = torch.empty((n_samples, self._n_envs), dtype=torch.bool, device=gs.device)
         self._log(f"Allocated buffers in {time.monotonic() - alloc_start:.1f}s")
 
-        for sample_idx in range(n_samples):
+        for i, sample_idx in enumerate(range(n_samples)):
             should_log_batch = None #(
             #     sample_idx == 0
             #     or sample_idx == n_samples - 1
@@ -996,6 +1140,10 @@ class SandboxManipulation:
             success_mask[sample_idx] = reached_goal
             # if should_log_batch:
             #     self._log(f"Finished action {batch_label} in {time.monotonic() - batch_start:.1f}s")
+            
+            # Periodically reshuffle particles to ensure diverse interactions and prevent overfitting to specific configurations
+            if i % 5 == 0:
+                self.shuffle_particles()
 
         # self._log("Compacting successful samples...")
         flat_success_mask = success_mask.reshape(max_samples)
