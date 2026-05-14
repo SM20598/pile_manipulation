@@ -87,18 +87,18 @@ class SandboxManipulation:
     def _log_step_progress(self, label: str | None, step: int, total_steps: int):
         if not label or total_steps <= 0:
             return
-        if step == 1 or step == total_steps or step % self._phase_progress_interval == 0:
-            self._log(f"  {label}: step {step}/{total_steps}")
+        # if step == 1 or step == total_steps or step % self._phase_progress_interval == 0:
+        #     self._log(f"  {label}: step {step}/{total_steps}")
 
     def _step_scene(self, label: str | None = None, step: int | None = None, total_steps: int | None = None):
         if self._trace_scene_steps and label and step is not None and total_steps is not None:
-            self._log(f"  {label}: before scene.step {step}/{total_steps}")
+            # self._log(f"  {label}: before scene.step {step}/{total_steps}")
             start_time = time.monotonic()
             self._scene.step(
                 update_visualizer=self._update_visualizer,
                 refresh_visualizer=self._update_visualizer,
             )
-            self._log(f"  {label}: after scene.step {step}/{total_steps} ({time.monotonic() - start_time:.3f}s)")
+            # self._log(f"  {label}: after scene.step {step}/{total_steps} ({time.monotonic() - start_time:.3f}s)")
         else:
             self._scene.step(
                 update_visualizer=self._update_visualizer,
@@ -956,15 +956,15 @@ class SandboxManipulation:
         self._log(f"Allocated buffers in {time.monotonic() - alloc_start:.1f}s")
 
         for sample_idx in range(n_samples):
-            should_log_batch = (
-                sample_idx == 0
-                or sample_idx == n_samples - 1
-                or sample_idx % self._sample_progress_interval == 0
-            )
+            should_log_batch = None #(
+            #     sample_idx == 0
+            #     or sample_idx == n_samples - 1
+            #     or sample_idx % self._sample_progress_interval == 0
+            # )
             batch_label = f"batch {sample_idx + 1}/{n_samples}"
             batch_start = time.monotonic()
-            if should_log_batch:
-                self._log(f"Collecting action {batch_label}")
+            # if should_log_batch:
+            self._log(f"Collecting action {batch_label}")
 
             state = self.get_material_state(
                 settle_steps=effective_settle_steps,
@@ -994,10 +994,10 @@ class SandboxManipulation:
             p_stops[sample_idx] = final_pos
             sample_angles[sample_idx] = angle
             success_mask[sample_idx] = reached_goal
-            if should_log_batch:
-                self._log(f"Finished action {batch_label} in {time.monotonic() - batch_start:.1f}s")
+            # if should_log_batch:
+            #     self._log(f"Finished action {batch_label} in {time.monotonic() - batch_start:.1f}s")
 
-        self._log("Compacting successful samples...")
+        # self._log("Compacting successful samples...")
         flat_success_mask = success_mask.reshape(max_samples)
         self.valid_states = states.reshape(max_samples, len(self.material), 4)[flat_success_mask]
         self.valid_states_ = states_.reshape(max_samples, len(self.material), 4)[flat_success_mask]
@@ -1029,7 +1029,7 @@ class SandboxManipulation:
         self._save_config(full_path / (str(n_runs) + "_config.yaml"))
         self._save_data(full_path / (str(n_runs) + "_data.pkl"))
         self._log(f"Saving run {n_runs} to {full_path}. Run has number {n_runs}.")
-        self._log(f"Collection complete in {time.monotonic() - collection_start:.1f}s")
+        # self._log(f"Collection complete in {time.monotonic() - collection_start:.1f}s")
 
         # Clean up GPU memory
         self._cleanup_gpu_memory()
