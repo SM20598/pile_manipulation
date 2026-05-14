@@ -450,22 +450,26 @@ class SandboxManipulation:
         for _ in range(horizon):
             self._step_scene()
 
-    def set_material_state(self, positions: torch.Tensor):
+    def shuffle_particles(self):
         """
-        Set position of particles across all environments.
-        
-        Args:
-            positions: Tensor of shape [n_envs, n_particles, 3]
+        Randomize particle positions within the box bounds across all environments.
+        Uses vectorized GPU operations for efficiency during training.
         """
         if self._material_type != "rsa":
             raise NotImplementedError("Method not implemented for materials other than RSA")
 
-        if positions.shape[0] != self._n_envs:
-            raise ValueError(
-                f"Expected {self._n_envs} environments, got {positions.shape[0]}"
-            )
+        # Generate random positions within box bounds (vectorized on GPU)
+        n_particles = len(self.material)
+        box_vol = torch.tensor(self._box_vol, dtype=torch.float32, device=gs.device)
+        box_pos = torch.tensor(self._box_pos, dtype=torch.float32, device=gs.device)
         
-        positions = positions.to(device=gs.device)
+        # Generate random positions: [n_envs, n_particles, 3]
+        # Uniform random in [-box_vol/2, box_vol/2] + box_pos
+        positions = torch.rand(
+            (self._n_envs, n_particles, 3), device=gs.device
+        ) * box_vol.unsqueeze(0).unsqueeze(0) + (box_pos - box_vol / 2).unsqueeze(0).unsqueeze(0)
+        
+        # Validate particle count
         if positions.shape[1] != len(self.material):
             raise ValueError(
                 f"Expected {len(self.material)} particles, got {positions.shape[1]}"

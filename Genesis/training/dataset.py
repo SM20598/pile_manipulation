@@ -12,33 +12,35 @@ TO_PXL = 1e3
 
 class PileSweepData(Dataset):
 
-    def __init__(self, path : str, run : int | None = None):
+    def __init__(self, paths : list[str], run : int | None = None):
         
         parentpath = Path(__file__).parent.parent
-        full_path = parentpath / path  # Adjust path as needed
         
-        print(os.walk(full_path))
-
-        if run is not None:
-            runs = [
-                (full_path / f'{run}_data.pkl', full_path / f'{run}_config.yaml')
-            ]
-        else:
-            runs = sorted([
-                (full_path / f'{f}', full_path / f'{f.replace("_data.pkl", "_config.yaml")}')
-                for f in os.listdir(full_path)
-                if f.endswith('_data.pkl')
-            ])
-
         self.samples = []
         self.configs = []
-        for data_file, config_file in runs:
-            with open(data_file, 'rb') as f:
-                self.samples.append(pickle.load(f))
+        for path in paths:
+            full_path = parentpath / "data" / path  # Adjust path as needed
 
-            
-            with open(config_file, 'r') as f:
-                self.configs.append(yaml.safe_load(f))
+            if run is not None:
+                runs = [
+                    (full_path / f'{run}_data.pkl', full_path / f'{run}_config.yaml')
+                ]
+            else:
+                runs = sorted([
+                    (full_path / f'{f}', full_path / f'{f.replace("_data.pkl", "_config.yaml")}')
+                    for f in os.listdir(full_path)
+                    if f.endswith('_data.pkl')
+                ])
+            for data_file, config_file in runs:
+                with open(data_file, 'rb') as f:
+                    self.samples.append(pickle.load(f))
+
+                
+                with open(config_file, 'r') as f:
+                    self.configs.append(yaml.safe_load(f))
+        
+        self._physics = torch.zeros((6), dtype=torch.float32)
+        
         
         # lookup tables for sample indexing
         self._run_lookup = []
@@ -147,8 +149,10 @@ class PileSweepData(Dataset):
             size=self._base_plate_grid.shape,
             drawing=(rotated_plate > 0.5).float()
         )
+        
+        self._det_physics(config)
 
-        return self._grid, self._grid_
+        return (self._grid, self._physics), self._grid_
 
 
     def _draw_particles_vectorized(self, particles, particles_, ctr):
@@ -236,10 +240,11 @@ class PileSweepData(Dataset):
         return rotated_grid.squeeze(0).squeeze(0)
 
 
-    def plot_grid(self, grid : torch.Tensor) -> None:
+    def plot_grid(self, grid : torch.Tensor, title: str = "") -> None:
         """Visualize the grid as an image"""
         from matplotlib import pyplot as plt
         plt.imshow(grid, interpolation='nearest')
+        plt.title(title)
         plt.show()
     
     def _create_grids(self, x_dim, y_dim, x_dim_plt, y_dim_plt) -> None:
@@ -311,6 +316,17 @@ class PileSweepData(Dataset):
         else:
             target[mask] = float(drawing)
     
+    def _det_physics(self,config):
+        p_s_min, p_s_max = config['sandbox']['material']['properties']['particle_size']
+        rho_min, rho_max = config['sandbox']['material']['properties']['density']
+        mu_min, mu_max = config['sandbox']['material']['properties']['friction']
+        
+        self._physics[0] = (p_s_min + p_s_max) / 2
+        self._physics[1] = (p_s_max - p_s_min) / math.sqrt(12)  # standard deviation
+        self._physics[2] = (p_s_min + p_s_max) / 2
+        self._physics[3] = (rho_max - rho_min) / math.sqrt(12)
+        self._physics[4] = (mu_min + mu_max) / 2
+        self._physics[5] = (mu_max - mu_min) / math.sqrt(12)
 
 def main():
     dataset = PileSweepData("data/cubes/chickpeas_on_glass/")
