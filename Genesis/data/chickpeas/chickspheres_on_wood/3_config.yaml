@@ -76,6 +76,6 @@ simulation:
     viewer_type: None
 statistics:
   Number of environments: 100
-  Number of failed samples: 495
+  Number of failed samples: 568
   Samples per environment: 100
-  Total samples collected: 9505
+  Total samples collected: 9432
