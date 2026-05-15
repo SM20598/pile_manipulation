@@ -7,6 +7,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from Genesis.training.dataset import PileSweepData
 from GranularDynamics2.myClasses.UNetModels_modular import UNet
+from GranularDynamics2.myClasses.UNetModels_conditioned import UNetConditioned, UNetFiLM
 from GranularDynamics2.TrainUnet_modular import data_augmentation
 from tqdm import trange
 import torch
@@ -18,10 +19,8 @@ EPOCHS = 50
 BATCH_SIZE = 128
 LR = 1e-4
 
-def load_genesis_dataset(data_folder):
-   base_dir = Path(__file__).parent
-   full_path = base_dir / "Genesis" / "data" / data_folder
-   return PileSweepData(full_path)
+def load_genesis_dataset(data_folders : list[str]):
+   return PileSweepData(data_folders)
 
 def chose_loss(loss : str):
    if "mse":
@@ -34,8 +33,8 @@ def chose_loss(loss : str):
 if __name__ == "__main__":
 
    continue_training = False
-   data_folder = "cubes/chickpeas_on_glass"
-   log_dir = "runs/unet_train"
+   data_folders = ["chickpeas/chickspheres_on_glass", "chickpeas/chickspheres_on_wood"]
+   log_dir = "runs/unet_unconditioned"
    structure_parameters = {
     "in_channels": 2,
     "out_channels": 1,
@@ -49,8 +48,9 @@ if __name__ == "__main__":
     }
    data_aug = True
    
-   dataset : Dataset = load_genesis_dataset(data_folder)
-   model = UNet(structure_parameters).to(DEVICE)
+   dataset : Dataset = load_genesis_dataset(data_folders)
+   # model = UNetConditioned(structure_parameters).to(DEVICE)
+   model = UNetConditioned().to(DEVICE)
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    criterion = torch.nn.MSELoss()
    writer = SummaryWriter(log_dir=log_dir)
@@ -60,90 +60,135 @@ if __name__ == "__main__":
    
    avg_val_losses = []
    with trange(EPOCHS, desc="Training Epochs") as tbar:
+   
+      n_samples = len(dataset)
+      
+      n_train = int(0.88 * n_samples)
+      n_val = int(0.02 * n_samples)
+      train_data = torch.utils.data.Subset(dataset, range(0, n_train))
+      val_data   = torch.utils.data.Subset(dataset, range(n_train, n_train+ n_val))
+      test_data   = torch.utils.data.Subset(dataset, range(n_train+ n_val, n_samples))
+      
+      val_loader = DataLoader(
+            val_data,
+            batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True
+         )
+      train_loader = DataLoader(
+         train_data,
+         batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
+         shuffle=True,
+         num_workers=4,
+         pin_memory=True
+      )
+      test_loader = DataLoader(
+         test_data,
+         batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
+         shuffle=False,
+         num_workers=4,
+         pin_memory=True
+      )
+      
       for epoch in tbar:
-            model.train()
+         model.train()
 
-            total_loss = 0.0
-            val_loss = 0.0
-            train_size = 0
-            val_size = 0
-
-            file_idx = 0
-            n_samples = len(dataset)
-            while file_idx < n_samples:
-               n_train = int(0.8 * n_samples)
-               n_val = int(0.1 * n_samples)
-               train_data = torch.utils.data.Subset(dataset, range(0, n_train))
-               val_data   = torch.utils.data.Subset(dataset, range(n_train, n_train+ n_val))
-
-               val_loader = DataLoader(
-                  val_data,
-                  batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
-                  shuffle=False,
-                  num_workers=4,
-                  pin_memory=True
-               )
-               train_loader = DataLoader(
-                  train_data,
-                  batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
-                  shuffle=True,
-                  num_workers=4,
-                  pin_memory=True
-               )
+         total_loss = 0.0
+         val_loss = 0.0
+         train_size = 0
+         val_size = 0
+         
+         for inputs_, outputs in train_loader:
+               inputs, physics = inputs_
                
-               # TRAINING LOOP
-               for inputs, outputs in train_loader:
-                  
-                  if data_aug:
-                        inputs, outputs = data_augmentation(inputs, outputs)
-                  inputs.to(DEVICE)
-                  outputs.to(DEVICE)
+               inputs = inputs.to(DEVICE)
+               physics = physics.to(DEVICE)
+               outputs = outputs.to(DEVICE)
                
-                  optimizer.zero_grad(set_to_none=True)
+               if data_aug:
 
-                  with torch.amp.autocast(device_type=DEVICE, dtype=torch.float16):
-                     pred_next = model(inputs)
-                     loss = criterion(pred_next.squeeze(1), outputs)  # (B, 1, H, W) -> (B, H, W)
-                  
-                  scaler.scale(loss).backward()
-                  scaler.step(optimizer)
-                  scaler.update()
+                  inputs_aug = torch.cat([
+                     inputs,
+                     torch.rot90(inputs, 1, (-2, -1)),
+                     torch.rot90(inputs, 2, (-2, -1)),
+                     torch.rot90(inputs, 3, (-2, -1)),
+                  ], dim=0)
 
-                  total_loss += loss.item() * inputs.size(0)
-                  train_size += inputs.size(0)
+                  outputs_aug = torch.cat([
+                     outputs,
+                     torch.rot90(outputs, 1, (-2, -1)),
+                     torch.rot90(outputs, 2, (-2, -1)),
+                     torch.rot90(outputs, 3, (-2, -1)),
+                  ], dim=0)
 
-               # Validation
-               model.eval()
+                  physics_aug = physics.repeat(4, 1)
+
+               optimizer.zero_grad(set_to_none=True)
+
+               with torch.amp.autocast(device_type=DEVICE, dtype=torch.float16):
+                  pred_next = model(inputs, physics)
+                  loss = criterion(pred_next.squeeze(1), outputs)  # (B, 1, H, W) -> (B, H, W)
                
-               # VALIDATION LOOP
-               with torch.no_grad():
-                  for inputs, outputs in val_loader:
-                     inputs, outputs = inputs.to(DEVICE), outputs.to(DEVICE)
-                     pred_next = model(inputs)
-                     val_loss += criterion(pred_next.squeeze(1), outputs.squeeze(1)).item() * inputs.size(0)
-                     val_size += inputs.size(0)
+               scaler.scale(loss).backward()
+               scaler.step(optimizer)
+               scaler.update()
 
-            avg_val_loss = val_loss / val_size
-            avg_val_losses.append(avg_val_loss)
+               total_loss += loss.item() * inputs.size(0)
+               train_size += inputs.size(0)
+         
+         # VALIDATION LOOP
+         model.eval()
+         with torch.no_grad():
+            for inputs_, outputs in val_loader:
+               inputs, physics = inputs_
+               
+               inputs = inputs.to(DEVICE)
+               physics = physics.to(DEVICE)
+               outputs = outputs.to(DEVICE)
+               
+               pred_next = model(inputs, physics)
+               val_loss += criterion(pred_next.squeeze(1), outputs.squeeze(1)).item() * inputs.size(0)
+               val_size += inputs.size(0)
 
-            if len(avg_val_losses) > 5 and avg_val_loss > max(avg_val_losses[-5:]):
-               print("Early stopping due to no improvement in validation loss.")
-               break
+         avg_val_loss = val_loss / val_size
+         avg_val_losses.append(avg_val_loss)
 
-            writer.add_scalar("Loss/Val", avg_val_loss, epoch)
-            avg_train_loss = total_loss / train_size
-            writer.add_scalar("Loss/Train", avg_train_loss, epoch)
-            tbar.set_postfix({"Train Loss": avg_train_loss, "Val Loss": avg_val_loss})
+         if len(avg_val_losses) > 5 and avg_val_loss > max(avg_val_losses[-5:]):
+            print("Early stopping due to no improvement in validation loss.")
+            break
 
-            # Save model every 10 epochs
-            if (epoch + 1) % 10 == 0:
-               save_path = os.path.join(log_dir, f"unet_epoch_{epoch+1}.pth")
-               model.save_checkpoint(save_path)
-            scheduler.step()
-            pass
-   writer.close()                
-   save_path = os.path.join(log_dir, "unet.pth")
-   model.save_checkpoint(save_path)
+         writer.add_scalar("Loss/Val", avg_val_loss, epoch)
+         avg_train_loss = total_loss / train_size
+         writer.add_scalar("Loss/Train", avg_train_loss, epoch)
+         tbar.set_postfix({"Train Loss": avg_train_loss, "Val Loss": avg_val_loss})
+
+         # Save model every 10 epochs
+         if (epoch + 1) % 10 == 0:
+            save_path = os.path.join(log_dir, f"unet_epoch_{epoch+1}.pth")
+            torch.save(model.state_dict(), save_path)
+         scheduler.step()
+         
+      writer.close()                
+      save_path = os.path.join(log_dir, "unet.pth")
+      torch.save(model.state_dict(), save_path)
+
+      criterion = torch.nn.MSELoss()
+      test_loss = 0.0
+      with torch.no_grad():
+            for inputs_, outputs in test_loader:
+               inputs, physics = inputs_
+               
+               inputs = inputs.to(DEVICE)
+               physics = physics.to(DEVICE)
+               outputs = outputs.to(DEVICE)
+               
+               pred_next = model(inputs, physics)
+               test_inputs = pred_next.squeeze(1)
+            # test_inputs = inputs[:,0:1,:,:].squeeze(1)
+            test_loss += criterion(test_inputs, outputs).item() * inputs.size(0)#
+      avg_test_loss = test_loss / len(test_loader.dataset)
+      print(f"Test Loss: {avg_test_loss}")
 
    
 

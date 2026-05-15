@@ -2,11 +2,11 @@ data_collection:
   goal_threshold: 0.001
   lift_steps: 100
   lower_steps: 100
-  n_envs: 100
+  n_envs: 10
   phase_progress_interval: 10
   progress: true
   sample_progress_interval: 1
-  samples_per_env: 100
+  samples_per_env: 1000
   settle_angular_damping: 0.2
   settle_linear_damping: 1.0
   settle_sleep_threshold: 0.01
@@ -75,7 +75,7 @@ simulation:
     show_viewer: false
     viewer_type: None
 statistics:
-  Number of environments: 100
-  Number of failed samples: 127
-  Samples per environment: 100
-  Total samples collected: 9873
+  Number of environments: 10
+  Number of failed samples: 34
+  Samples per environment: 1000
+  Total samples collected: 9966
