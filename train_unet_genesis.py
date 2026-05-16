@@ -8,7 +8,6 @@ from torch.utils.data import Dataset, DataLoader
 from Genesis.training.dataset import PileSweepData
 from GranularDynamics2.myClasses.UNetModels_modular import UNet
 from GranularDynamics2.myClasses.UNetModels_conditioned import UNetConditioned, UNetFiLM
-from GranularDynamics2.TrainUnet_modular import data_augmentation
 from tqdm import trange
 import torch
 from torch.utils.tensorboard import SummaryWriter

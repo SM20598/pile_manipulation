@@ -34,8 +34,7 @@ class PileSweepData(Dataset):
             for data_file, config_file in runs:
                 with open(data_file, 'rb') as f:
                     self.samples.append(pickle.load(f))
-
-                
+                    
                 with open(config_file, 'r') as f:
                     self.configs.append(yaml.safe_load(f))
         
