@@ -1,0 +1,110 @@
+data_collection:
+  goal_threshold: 0.001
+  lift_steps: 100
+  lower_steps: 100
+  n_envs: 5
+  phase_progress_interval: 10
+  progress: true
+  sample_progress_interval: 1
+  samples_per_env: 20
+  settle_angular_damping: 0.2
+  settle_linear_damping: 1.0
+  settle_sleep_threshold: 0.01
+  settle_stabilization: true
+  settle_steps: 100
+  speed: 0.125
+  sweep_steps: null
+  sweep_steps_mode: auto
+  trace_scene_steps: false
+  update_visualizer: false
+data_collection_property_sweep:
+  particle_density_center: 750.0
+  particle_density_mode: constant
+  particle_friction_center: 0.01
+  particle_friction_mode: range_pm20
+  particle_shape: sphere
+  particle_size_center: 0.005
+  particle_size_mode: range_pm20
+  table_friction: 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+sandbox:
+  box:
+    omit: false
+    pos:
+    - 0.0
+    - 0.0
+    - 0.0
+    properties:
+      friction: 0.05
+    vol:
+    - 0.128
+    - 0.128
+    - 0.04
+    wall_thickness: 0.02
+  material:
+    properties:
+      density: 750.0
+      friction:
+      - 0.01
+      - 0.012
+      n_particles: 10
+      particle_size:
+      - 0.004
+      - 0.006
+      sampled_density:
+      - 750.0
+      - 750.0
+      - 750.0
+      - 750.0
+      - 750.0
+      - 750.0
+      - 750.0
+      - 750.0
+      - 750.0
+      - 750.0
+      sampled_friction:
+      - 0.010404420085251331
+      - 0.010562794283032417
+      - 0.011966874822974205
+      - 0.010903563350439072
+      - 0.010710053145885468
+      - 0.010139410383999348
+      - 0.0114822406321764
+      - 0.010707742534577847
+      - 0.010673838667571545
+      - 0.011385123245418072
+      shape: sphere
+    type: rsa
+    vol:
+    - 0.12
+    - 0.12
+    - 0.05
+  safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 2
+  viewer_options:
+    camera_fov: 30
+    max_FPS: 60
+    show_viewer: false
+    viewer_type: None
+statistics:
+  Number of environments: 5
+  Number of failed samples: 0
+  Samples per environment: 20
+  Total samples collected: 100
