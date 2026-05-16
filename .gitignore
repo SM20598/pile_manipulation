@@ -1,3 +1,3 @@
 .venv/
-genesis/utilities/__pycache__/
-genesis/__pycache__/
+Genesis/utilities/__pycache__/*
+Genesis/__pycache__/*
