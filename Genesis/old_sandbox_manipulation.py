@@ -8,7 +8,6 @@ from pathlib import Path
 import pickle
 import os
 import math
-import copy
 import torch
 
 
@@ -51,7 +50,6 @@ class SandboxManipulation:
         self._material_type = self._config["sandbox"]["material"].get('type', 'rsa')
         collection_cfg = self._config.get("data_collection", {})
         self._settle_steps = collection_cfg.get("settle_steps", 100)
-        self._settle_min_steps = collection_cfg.get("settle_min_steps", 10)
         self._settle_check_interval = collection_cfg.get("settle_check_interval", 20)
         self._settle_threshold = collection_cfg.get("settle_threshold", 0.01)
         self._lower_steps = collection_cfg.get("lower_steps", 100)
@@ -66,7 +64,6 @@ class SandboxManipulation:
         self._settle_angular_damping = collection_cfg.get("settle_angular_damping", 0.2)
         self._settle_linear_damping = collection_cfg.get("settle_linear_damping", 1.0)
         self._settle_sleep_threshold = collection_cfg.get("settle_sleep_threshold", 0.01)
-        self._freeze_reached_envs = collection_cfg.get("freeze_reached_envs", False)
         
         # Multi-environment settings
         self._n_envs = n_envs
@@ -81,8 +78,6 @@ class SandboxManipulation:
         self._particle_dofs_idx = None
         self._particle_linear_dofs_idx = None
         self._particle_angular_dofs_idx = None
-        self._particle_sizes_expanded = None
-        self._env_index_offset = 0
 
     def _log(self, message: str):
         if self._progress:
@@ -91,22 +86,16 @@ class SandboxManipulation:
     def _log_step_progress(self, label: str | None, step: int, total_steps: int):
         if not label or total_steps <= 0:
             return
-        # if step == 1 or step == total_steps or step % self._phase_progress_interval == 0:
-        #     self._log(f"  {label}: step {step}/{total_steps}")
+        if step == 1 or step == total_steps or step % self._phase_progress_interval == 0:
+            self._log(f"  {label}: step {step}/{total_steps}")
 
     def _step_scene(self, label: str | None = None, step: int | None = None, total_steps: int | None = None):
         if self._trace_scene_steps and label and step is not None and total_steps is not None:
-            should_log_step = (
-                step == 1
-                or step == total_steps
-                or step % self._phase_progress_interval == 0
-            )
+            self._log(f"  {label}: scene.step {step}/{total_steps}")
             self._scene.step(
                 update_visualizer=self._update_visualizer,
                 refresh_visualizer=self._update_visualizer,
             )
-            if should_log_step:
-                self._log(f"  {label}: scene.step {step}/{total_steps}")
         else:
             self._scene.step(
                 update_visualizer=self._update_visualizer,
@@ -167,7 +156,6 @@ class SandboxManipulation:
                 ls_iterations=rigid_cfg.get("ls_iterations", 50),
                 tolerance=rigid_cfg.get("tolerance", 1e-6),
                 ls_tolerance=rigid_cfg.get("ls_tolerance", 0.01),
-                batch_links_info=rigid_cfg.get("batch_links_info", False),
                 box_box_detection=rigid_cfg.get("box_box_detection", False),
                 use_contact_island=rigid_cfg.get("use_contact_island", False),
                 use_hibernation=rigid_cfg.get("use_hibernation", False),
@@ -233,6 +221,7 @@ class SandboxManipulation:
 
         self.box_parts = {}
         self.box_parts["ground_plate"] = self._scene.add_entity(
+
             material=gs.materials.Rigid(
                 friction=friction,
             ),    
@@ -322,7 +311,7 @@ class SandboxManipulation:
                 wall_thickness=self._wall_thickness,
                 color=granular_color
             )                
-            granular_touch_height = self._get_rsa_particle_touch_height(material_properties)
+            granular_touch_height = self._particle_size/2 if isinstance(self._particle_size, float) else min(self._particle_size)/4
         
         elif self._material_type == "sand":
             self.material = add_sand(
@@ -347,29 +336,9 @@ class SandboxManipulation:
 
         self._operation_height = self._box_pos[2] + granular_touch_height + self._wall_thickness/2       
 
-    def _get_rsa_particle_touch_height(self, material_properties):
-        shape = material_properties.get("shape", None)
-        if shape is None:
-            shape = "cube" if material_properties.get("cubes", False) else "sphere"
-        shape = shape.lower()
-
-        particle_size = material_properties.get("particle_size", self._particle_size)
-        default_size = float(particle_size if isinstance(particle_size, (int, float)) else max(particle_size))
-
-        def max_size(name, default):
-            value = material_properties.get(name, default)
-            if isinstance(value, (int, float)):
-                return float(value)
-            return float(max(value))
-
-        if shape in ("rectangle", "rectangular_cube", "box", "cylinder"):
-            return max_size("particle_height", default_size) * 0.5
-        return default_size * 0.5
-
     def _save_data(
             self,
             path : str | Path,
-            env_idx: int | None = None,
     ):
         """
         Save data in the legacy list-of-dicts pickle format.
@@ -395,41 +364,6 @@ class SandboxManipulation:
         p_starts = self.valid_p_starts.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
         p_stops = self.valid_p_stops.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
         angles = self.valid_angles.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
-        env_indices = None
-        if hasattr(self, "valid_env_indices"):
-            env_indices = self.valid_env_indices.detach().to('cpu', non_blocking=use_non_blocking).contiguous()
-        if env_idx is not None:
-            if env_indices is None:
-                row_mask = torch.zeros((states.shape[0],), dtype=torch.bool)
-            else:
-                row_mask = env_indices == env_idx
-            states = states[row_mask]
-            states_ = states_[row_mask]
-            p_starts = p_starts[row_mask]
-            p_stops = p_stops[row_mask]
-            angles = angles[row_mask]
-            if env_indices is not None:
-                env_indices = env_indices[row_mask]
-        metadata = copy.deepcopy(self._config.get("data_collection_property_sweep", {}))
-        metadata.update({
-            "state_columns": [
-                "x", "y", "z",
-                "rot_x", "rot_y", "rot_z",
-                "size_x", "size_y", "size_z",
-            ],
-            "action_columns": ["start_position", "end_position", "angle"],
-            "particle_friction": copy.deepcopy(
-                self._config["sandbox"]["material"].get("properties", {}).get("sampled_friction")
-            ),
-            "particle_density": copy.deepcopy(
-                self._config["sandbox"]["material"].get("properties", {}).get("sampled_density")
-            ),
-            "table_friction": self._config["sandbox"]["box"].get("properties", {}).get("friction"),
-            "plate_size": copy.deepcopy(self._plate_size),
-            "box_pos": copy.deepcopy(self._box_pos),
-            "box_vol": copy.deepcopy(self._box_vol),
-            "wall_thickness": self._wall_thickness,
-        })
 
         # Ensure transfers are complete before pickling
         if use_non_blocking:
@@ -448,157 +382,21 @@ class SandboxManipulation:
             {
                 "state" : states[i].clone(),
                 "state_" : states_[i].clone(),
-                "action" : (p_starts[i].clone(), p_stops[i].clone(), angles[i].clone()),
-                "metadata": self._sample_metadata(metadata, int(env_indices[i].item()) if env_indices is not None else None),
+                "action" : (p_starts[i].clone(), p_stops[i].clone(), angles[i].clone())
             } for i in range(states.shape[0])
         ]
         with open(path, 'wb') as handle:
             pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
         self._log(f"Saved {path.name} ({path.stat().st_size / 1024**2:.1f} MiB on disk)")
-
-    def _valid_samples_to_cpu(self):
-        use_non_blocking = any(
-            tensor.is_cuda
-            for tensor in (
-                self.valid_states,
-                self.valid_states_,
-                self.valid_p_starts,
-                self.valid_p_stops,
-                self.valid_angles,
-            )
-        )
-        tensors = {
-            "states": self.valid_states.detach().to('cpu', non_blocking=use_non_blocking).contiguous(),
-            "states_": self.valid_states_.detach().to('cpu', non_blocking=use_non_blocking).contiguous(),
-            "p_starts": self.valid_p_starts.detach().to('cpu', non_blocking=use_non_blocking).contiguous(),
-            "p_stops": self.valid_p_stops.detach().to('cpu', non_blocking=use_non_blocking).contiguous(),
-            "angles": self.valid_angles.detach().to('cpu', non_blocking=use_non_blocking).contiguous(),
-            "env_indices": None,
-        }
-        if hasattr(self, "valid_env_indices"):
-            tensors["env_indices"] = self.valid_env_indices.detach().to(
-                'cpu', non_blocking=use_non_blocking
-            ).contiguous()
-        if use_non_blocking:
-            torch.cuda.synchronize()
-        return tensors
-
-    def _base_sample_metadata(self):
-        metadata = copy.deepcopy(self._config.get("data_collection_property_sweep", {}))
-        metadata.update({
-            "state_columns": [
-                "x", "y", "z",
-                "rot_x", "rot_y", "rot_z",
-                "size_x", "size_y", "size_z",
-            ],
-            "action_columns": ["start_position", "end_position", "angle"],
-            "particle_friction": copy.deepcopy(
-                self._config["sandbox"]["material"].get("properties", {}).get("sampled_friction")
-            ),
-            "particle_density": copy.deepcopy(
-                self._config["sandbox"]["material"].get("properties", {}).get("sampled_density")
-            ),
-            "table_friction": self._config["sandbox"]["box"].get("properties", {}).get("friction"),
-            "plate_size": copy.deepcopy(self._plate_size),
-            "box_pos": copy.deepcopy(self._box_pos),
-            "box_vol": copy.deepcopy(self._box_vol),
-            "wall_thickness": self._wall_thickness,
-        })
-        return metadata
-
-    def _save_env_data_from_cpu(self, path: str | Path, tensors: dict, env_idx: int):
-        path = Path(path)
-        env_indices = tensors["env_indices"]
-        if env_indices is None:
-            row_mask = torch.zeros((tensors["states"].shape[0],), dtype=torch.bool)
-        else:
-            row_mask = env_indices == env_idx
-
-        states = tensors["states"][row_mask]
-        states_ = tensors["states_"][row_mask]
-        p_starts = tensors["p_starts"][row_mask]
-        p_stops = tensors["p_stops"][row_mask]
-        angles = tensors["angles"][row_mask]
-        filtered_env_indices = env_indices[row_mask] if env_indices is not None else None
-        metadata = self._base_sample_metadata()
-
-        raw_bytes = sum(
-            tensor.numel() * tensor.element_size()
-            for tensor in (states, states_, p_starts, p_stops, angles)
-        )
-        self._log(
-            f"Saving env {env_idx} with {states.shape[0]} samples to {path.name} "
-            f"({raw_bytes / 1024**2:.1f} MiB raw tensors)"
-        )
-        data = [
-            {
-                "state": states[i].clone(),
-                "state_": states_[i].clone(),
-                "action": (p_starts[i].clone(), p_stops[i].clone(), angles[i].clone()),
-                "metadata": self._sample_metadata(
-                    metadata,
-                    int(filtered_env_indices[i].item()) if filtered_env_indices is not None else env_idx,
-                ),
-            } for i in range(states.shape[0])
-        ]
-        with open(path, 'wb') as handle:
-            pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        self._log(f"Saved {path.name} ({path.stat().st_size / 1024**2:.1f} MiB on disk)")
-
-    def _sample_metadata(self, metadata, env_idx: int | None):
-        sample_metadata = copy.deepcopy(metadata)
-        if env_idx is not None:
-            global_env_idx = self._env_index_offset + env_idx
-            sample_metadata.pop("env_settings", None)
-            env_metadata = getattr(self, "_env_property_metadata", None)
-            if env_metadata is not None:
-                sample_metadata.update(copy.deepcopy(env_metadata[env_idx]))
-            sample_metadata["local_env_idx"] = env_idx
-            sample_metadata["env_idx"] = global_env_idx
-        return sample_metadata
 
     def _save_config(
             self,
-            path : str | Path,
-            env_idx: int | None = None,
+            path : str | Path
         ):
 
         with open(path, 'w') as outfile:
             try: 
-                config = copy.deepcopy(self._config)
-                if env_idx is not None:
-                    global_env_idx = self._env_index_offset + env_idx
-                    env_metadata = getattr(self, "_env_property_metadata", None)
-                    config.setdefault("data_collection_property_sweep", {})
-                    config["data_collection_property_sweep"].pop("env_settings", None)
-                    config["data_collection_property_sweep"].update(
-                        {
-                            "mode": "single_environment",
-                            "source_n_property_envs": self._n_envs,
-                        }
-                    )
-                    if env_metadata is not None:
-                        config["data_collection_property_sweep"].update(
-                            copy.deepcopy(env_metadata[env_idx])
-                        )
-                    config["data_collection_property_sweep"]["local_env_idx"] = env_idx
-                    config["data_collection_property_sweep"]["env_idx"] = global_env_idx
-                    if hasattr(self, "valid_env_indices"):
-                        env_successes = int((self.valid_env_indices == env_idx).sum().item())
-                        config["statistics"] = copy.deepcopy(config.get("statistics", {}))
-                        config["statistics"].update(
-                            {
-                                "Environment index": global_env_idx,
-                                "Local environment index": env_idx,
-                                "Environment samples collected": env_successes,
-                                "Environment failed samples": max(
-                                    0,
-                                    int(config.get("data_collection", {}).get("samples_per_env", 0))
-                                    - env_successes,
-                                ),
-                            }
-                        )
-                yaml.dump(config, outfile, default_flow_style=False)
+                yaml.dump(self._config, outfile, default_flow_style=False)
             except yaml.YAMLError as exc:
                 print(exc)
        
@@ -622,39 +420,19 @@ class SandboxManipulation:
         linear_dofs_idx = []
         angular_dofs_idx = []
         for particle in self.material:
-            sizes.append(self._get_particle_size(particle))
+            size = particle.morph.size[0] if hasattr(particle.morph, "size") else particle.morph.radius * 2
+            sizes.append(float(size))
             links_idx.append(particle.link_start)
             if particle.n_dofs == 6:
                 particle_dofs = list(range(particle.dof_start, particle.dof_end))
                 dofs_idx.extend(particle_dofs)
                 linear_dofs_idx.extend(particle_dofs[:3])
                 angular_dofs_idx.extend(particle_dofs[3:])
-        self._particle_sizes = torch.tensor(sizes, device=gs.device).view(1, -1, 3)
-        self._particle_sizes_expanded = None
+        self._particle_sizes = torch.tensor(sizes, device=gs.device).view(1, -1)
         self._particle_links_idx = torch.tensor(links_idx, dtype=gs.tc_int, device=gs.device)
         self._particle_dofs_idx = torch.tensor(dofs_idx, dtype=gs.tc_int, device=gs.device)
         self._particle_linear_dofs_idx = torch.tensor(linear_dofs_idx, dtype=gs.tc_int, device=gs.device)
         self._particle_angular_dofs_idx = torch.tensor(angular_dofs_idx, dtype=gs.tc_int, device=gs.device)
-
-    def _expanded_particle_sizes(self):
-        if self._particle_sizes is None:
-            self._cache_particle_sizes()
-        if (
-            self._particle_sizes_expanded is None
-            or self._particle_sizes_expanded.shape[0] != self._n_envs
-        ):
-            self._particle_sizes_expanded = self._particle_sizes.expand(self._n_envs, -1, -1)
-        return self._particle_sizes_expanded
-
-    def _get_particle_size(self, particle):
-        if hasattr(particle.morph, "size"):
-            size = particle.morph.size
-            return (float(size[0]), float(size[1]), float(size[2]))
-        if hasattr(particle.morph, "height") and hasattr(particle.morph, "radius"):
-            diameter = float(particle.morph.radius) * 2
-            return (diameter, diameter, float(particle.morph.height))
-        diameter = float(particle.morph.radius) * 2
-        return (diameter, diameter, diameter)
 
     def _sample_particle_property(self, value, *, min_value: float | None = None):
         n_particles = len(self.material)
@@ -684,9 +462,12 @@ class SandboxManipulation:
         """
         Set one material configuration shared by all parallel environments.
 
-        This avoids per-environment rigid link info and keeps simulation steps
-        on the fast shared-material path.
+        This keeps Genesis on the fast shared link-info path. Density changes
+        are applied as scalar entity mass updates, not per-environment masses.
         """
+        if self._material_type != "rsa":
+            raise NotImplementedError("Shared material property updates are only implemented for RSA particles.")
+
         particle_frictions = self._sample_particle_property(setting["particle_friction"], min_value=1e-2)
         particle_densities = self._sample_particle_property(setting["particle_density"], min_value=gs.EPS)
         table_friction = max(float(setting["table_friction"]), 1e-2)
@@ -706,7 +487,7 @@ class SandboxManipulation:
         material_properties["sampled_density"] = particle_densities.tolist()
         self._config["sandbox"]["box"].setdefault("properties", {})["friction"] = table_friction
 
-        metadata = copy.deepcopy(setting.get("metadata", {}))
+        metadata = dict(setting.get("metadata", {}))
         metadata.update(
             {
                 "particle_friction": material_properties["sampled_friction"],
@@ -714,12 +495,12 @@ class SandboxManipulation:
                 "table_friction": table_friction,
             }
         )
-        self._env_property_metadata = [copy.deepcopy(metadata) for _ in range(self._n_envs)]
+        self._env_property_metadata = [dict(metadata) for _ in range(self._n_envs)]
 
         self._config["data_collection_property_sweep"] = {
             "mode": "shared_batch",
             "n_property_envs": self._n_envs,
-            "env_settings": copy.deepcopy(self._env_property_metadata),
+            "env_settings": self._env_property_metadata,
         }
         return {
             "particle_friction": particle_frictions,
@@ -740,183 +521,30 @@ class SandboxManipulation:
         for _ in range(horizon):
             self._step_scene()
 
-    def shuffle_particles(self):
+    def set_material_state(self, positions: torch.Tensor):
         """
-        Randomize particle positions within the box bounds across all environments
-        without particle-particle overlap.
-
-        Particles are placed largest-first. Each step samples a batch of candidate
-        positions per environment and accepts the first candidate that clears the
-        already-placed particles. This keeps the expensive overlap test vectorized
-        on the active device while avoiding the long tail of scalar RSA loops.
+        Set position of particles across all environments.
+        
+        Args:
+            positions: Tensor of shape [n_envs, n_particles, 3]
         """
         if self._material_type != "rsa":
             raise NotImplementedError("Method not implemented for materials other than RSA")
 
-        n_particles = len(self.material)
-        if n_particles == 0:
-            return
-
-        if self._particle_sizes is None:
-            self._cache_particle_sizes()
-
-        half_extents = []
-        collision_radii = []
-        for particle in self.material:
-            if hasattr(particle.morph, "size"):
-                size = torch.as_tensor(particle.morph.size, dtype=torch.float32, device=gs.device)
-                if size.ndim == 0:
-                    size = size.repeat(3)
-                half_extent = size[:3] * 0.5
-                collision_radius = torch.linalg.norm(half_extent)
-            elif hasattr(particle.morph, "height") and hasattr(particle.morph, "radius"):
-                radius = torch.tensor(float(particle.morph.radius), device=gs.device)
-                height = torch.tensor(float(particle.morph.height), device=gs.device)
-                half_extent = torch.stack((radius, radius, height * 0.5))
-                collision_radius = torch.linalg.norm(half_extent)
-            else:
-                collision_radius = torch.tensor(float(particle.morph.radius), device=gs.device)
-                half_extent = collision_radius.repeat(3)
-            half_extents.append(half_extent)
-            collision_radii.append(collision_radius)
-        half_extents = torch.stack(half_extents)
-        collision_radii = torch.stack(collision_radii)
-        wall_thickness = float(self._wall_thickness)
-
-        inner_min = torch.tensor(
-            [
-                self._box_pos[0] - self._box_vol[0] * 0.5,
-                self._box_pos[1] - self._box_vol[1] * 0.5,
-                self._box_pos[2] + wall_thickness * 0.5,
-            ],
-            dtype=torch.float32,
-            device=gs.device,
-        )
-        inner_max = torch.tensor(
-            [
-                self._box_pos[0] + self._box_vol[0] * 0.5,
-                self._box_pos[1] + self._box_vol[1] * 0.5,
-                self._box_pos[2] + self._box_vol[2] - wall_thickness * 0.5,
-            ],
-            dtype=torch.float32,
-            device=gs.device,
-        )
-
-        lower = inner_min.unsqueeze(0) + half_extents
-        upper = inner_max.unsqueeze(0) - half_extents
-        if (upper < lower).any():
-            raise ValueError("At least one particle is too large to fit inside the box.")
-
-        positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
-        placed_mask = torch.zeros((n_particles,), dtype=torch.bool, device=gs.device)
-        order = torch.argsort(collision_radii, descending=True)
-        candidate_batch = max(64, min(512, 16 * n_particles))
-        max_rounds = 16
-
-        for particle_idx_tensor in order:
-            particle_idx = int(particle_idx_tensor.item())
-            active_envs = torch.ones((self._n_envs,), dtype=torch.bool, device=gs.device)
-            particle_lower = lower[particle_idx]
-            particle_span = upper[particle_idx] - particle_lower
-
-            for _ in range(max_rounds):
-                active_idx = torch.nonzero(active_envs, as_tuple=False).squeeze(1)
-                if active_idx.numel() == 0:
-                    break
-
-                candidates = (
-                    torch.rand((active_idx.numel(), candidate_batch, 3), device=gs.device)
-                    * particle_span.view(1, 1, 3)
-                    + particle_lower.view(1, 1, 3)
-                )
-
-                placed_idx = torch.nonzero(placed_mask, as_tuple=False).squeeze(1)
-                if placed_idx.numel() == 0:
-                    valid = torch.ones(
-                        (active_idx.numel(), candidate_batch),
-                        dtype=torch.bool,
-                        device=gs.device,
-                    )
-                else:
-                    placed_positions = positions[active_idx][:, placed_idx, :]
-                    min_dist = collision_radii[particle_idx] + collision_radii[placed_idx]
-                    delta = candidates.unsqueeze(2) - placed_positions.unsqueeze(1)
-                    dist2 = torch.sum(delta * delta, dim=-1)
-                    valid = (dist2 >= (min_dist * min_dist).view(1, 1, -1)).all(dim=2)
-
-                has_valid = valid.any(dim=1)
-                if has_valid.any():
-                    accepted_envs = active_idx[has_valid]
-                    first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
-                    positions[accepted_envs, particle_idx, :] = candidates[has_valid, first_valid, :]
-                    active_envs[accepted_envs] = False
-
-            if active_envs.any():
-                self._fill_unplaced_particle_from_lattice(
-                    positions=positions,
-                    placed_mask=placed_mask,
-                    particle_idx=particle_idx,
-                    active_envs=active_envs,
-                    collision_radii=collision_radii,
-                    inner_min=inner_min,
-                    inner_max=inner_max,
-                )
-
-            placed_mask[particle_idx] = True
+        if positions.shape[0] != self._n_envs:
+            raise ValueError(
+                f"Expected {self._n_envs} environments, got {positions.shape[0]}"
+            )
+        
+        positions = positions.to(device=gs.device)
+        if positions.shape[1] != len(self.material):
+            raise ValueError(
+                f"Expected {len(self.material)} particles, got {positions.shape[1]}"
+            )
 
         envs_idx = torch.arange(self._n_envs, device=gs.device)
         for particle_idx, particle in enumerate(self.material):
             particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
-
-    def _fill_unplaced_particle_from_lattice(
-        self,
-        positions: torch.Tensor,
-        placed_mask: torch.Tensor,
-        particle_idx: int,
-        active_envs: torch.Tensor,
-        collision_radii: torch.Tensor,
-        inner_min: torch.Tensor,
-        inner_max: torch.Tensor,
-    ):
-        """Fallback placement with guaranteed non-overlap if a max-radius grid fits."""
-        max_radius = torch.max(collision_radii)
-        pitch = 2.0 * max_radius
-        grid_min = inner_min + max_radius
-        grid_max = inner_max - max_radius
-        counts = torch.floor((grid_max - grid_min) / pitch).to(torch.int64) + 1
-
-        if (counts <= 0).any() or torch.prod(counts).item() < len(self.material):
-            raise RuntimeError(
-                "Could not place all particles without overlap. "
-                "The box is too dense for the configured particle sizes."
-            )
-
-        xs = grid_min[0] + torch.arange(int(counts[0].item()), device=gs.device, dtype=torch.float32) * pitch
-        ys = grid_min[1] + torch.arange(int(counts[1].item()), device=gs.device, dtype=torch.float32) * pitch
-        zs = grid_min[2] + torch.arange(int(counts[2].item()), device=gs.device, dtype=torch.float32) * pitch
-        grid = torch.cartesian_prod(xs, ys, zs)
-
-        placed_idx = torch.nonzero(placed_mask, as_tuple=False).squeeze(1)
-        active_idx = torch.nonzero(active_envs, as_tuple=False).squeeze(1)
-        for env_idx_tensor in active_idx:
-            env_idx = int(env_idx_tensor.item())
-            if placed_idx.numel() > 0:
-                delta = grid.unsqueeze(1) - positions[env_idx, placed_idx, :].unsqueeze(0)
-                dist2 = torch.sum(delta * delta, dim=-1)
-                min_dist = collision_radii[particle_idx] + collision_radii[placed_idx]
-                valid = (dist2 >= (min_dist * min_dist).view(1, -1)).all(dim=1)
-                valid_grid = grid[valid]
-            else:
-                valid_grid = grid
-
-            if valid_grid.shape[0] == 0:
-                raise RuntimeError(
-                    "Could not place all particles without overlap. "
-                    "The box is too dense for the configured particle sizes."
-                )
-
-            choice = torch.randint(valid_grid.shape[0], (1,), device=gs.device).item()
-            positions[env_idx, particle_idx, :] = valid_grid[choice]
 
     def _get_particle_positions(self):
         if self._particle_links_idx is not None:
@@ -935,39 +563,6 @@ class SandboxManipulation:
         for particle_idx, particle in enumerate(self.material):
             velocities[:, particle_idx, :] = particle.get_vel()
         return velocities
-
-    def _get_particle_quats(self):
-        if self._particle_links_idx is not None:
-            return self._scene.rigid_solver.get_links_quat(links_idx=self._particle_links_idx)
-
-        quats = torch.empty((self._n_envs, len(self.material), 4), device=gs.device)
-        for particle_idx, particle in enumerate(self.material):
-            quats[:, particle_idx, :] = particle.get_quat()
-        return quats
-
-    def _quat_to_xyz_rotation(self, quats):
-        w, x, y, z = quats.unbind(dim=-1)
-        rot_x = torch.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
-        sin_pitch = torch.clamp(2.0 * (w * y - z * x), -1.0, 1.0)
-        rot_y = torch.asin(sin_pitch)
-        rot_z = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-        return torch.stack((rot_x, rot_y, rot_z), dim=-1)
-
-    def _max_particle_dof_speed_sq(self):
-        if self._particle_dofs_idx is None or self._particle_dofs_idx.numel() == 0:
-            return None
-        vel = self._scene.rigid_solver.get_dofs_velocity(dofs_idx=self._particle_dofs_idx)
-        vel = vel.reshape(self._n_envs, len(self.material), 6)
-        linear_speed_sq = torch.sum(vel[:, :, :3] * vel[:, :, :3], dim=2).max()
-        angular_speed_sq = torch.sum(vel[:, :, 3:] * vel[:, :, 3:], dim=2).max()
-        return torch.maximum(linear_speed_sq, angular_speed_sq)
-
-    def _particles_settled(self):
-        max_speed_sq = self._max_particle_dof_speed_sq()
-        if max_speed_sq is None:
-            return False, None
-        settled = max_speed_sq < (self._settle_threshold * self._settle_threshold)
-        return bool(settled.item()), max_speed_sq
 
     def _stabilize_settled_particles(self, progress_label: str | None = None):
         if (
@@ -999,21 +594,13 @@ class SandboxManipulation:
         if progress_label:
             self._log(f"  {progress_label}: stabilized particle velocities")
 
-    def get_material_state(
-            self,
-            settle_steps: int | None = None,
-            progress_label: str | None = None,
-            out: torch.Tensor | None = None,
-        ):
+    def get_material_state(self, settle_steps: int | None = None, progress_label: str | None = None):
         """
-        Returns particle state for all environments.
+        Returns particle state (positions and sizes) for all environments.
         Optimized for GPU processing.
 
         Returns:
-            Tensor of shape [n_envs, n_particles, 9] with
-            (x, y, z, rot_x, rot_y, rot_z, size_x, size_y, size_z).
-            Rotations are Euler angles in radians derived from the particle
-            quaternion, and sizes are the particle dimensions.
+            Tensor of shape [n_envs, n_particles, 4] with (x, y, z, size)
         """
         if self._material_type != "rsa":
             raise NotImplementedError("Method not implemented for materials other than RSA")
@@ -1024,12 +611,11 @@ class SandboxManipulation:
         if progress_label:
             self._log(f"  {progress_label}: settling {settle_steps} steps")
 
-        # Hold plate still while particles settle.
-        plate_pos = self.plate.get_pos()
-        self.plate.set_pos(plate_pos)
+        # Hold plate still
+        self.plate.set_pos(self.plate.get_pos())
         self.plate.control_dofs_position_velocity(
-            plate_pos,
-            torch.zeros_like(plate_pos),
+            self.plate.get_pos(),
+            torch.zeros((self._n_envs, 3), device=gs.device),
             dofs_idx_local=[0, 1, 2]
         )
 
@@ -1038,36 +624,16 @@ class SandboxManipulation:
             self.plate.set_dofs_position(frozen_plate_dofs)
             self._step_scene(progress_label, step + 1, settle_steps)
             self._log_step_progress(progress_label, step + 1, settle_steps)
-            if (
-                step + 1 >= self._settle_min_steps
-                and self._settle_check_interval > 0
-                and (step + 1) % self._settle_check_interval == 0
-            ):
-                settled, max_speed_sq = self._particles_settled()
-                if settled:
-                    if progress_label:
-                        max_speed = torch.sqrt(max_speed_sq).item()
-                        self._log(
-                            f"  {progress_label}: settled after {step + 1}/{settle_steps} "
-                            f"steps, max speed {max_speed:.5f}"
-                        )
-                    break
-
         self._stabilize_settled_particles(progress_label)
 
-        if out is None:
-            state = torch.ones((self._n_envs, n_p, 9), device=gs.device)
-        else:
-            expected_shape = (self._n_envs, n_p, 9)
-            if tuple(out.shape) != expected_shape:
-                raise ValueError(f"Expected output state shape {expected_shape}, got {tuple(out.shape)}")
-            state = out
-
+        state = torch.empty((self._n_envs, n_p, 4), device=gs.device)
         if progress_label:
-            self._log(f"  {progress_label}: reading particle state")
+            self._log(f"  {progress_label}: reading particle positions")
         state[:, :, 0:3] = self._get_particle_positions()
-        # state[:, :, 3:6] = self._quat_to_xyz_rotation(self._get_particle_quats())
-        # state[:, :, 6:9] = self._expanded_particle_sizes()
+
+        if self._particle_sizes is None:
+            self._cache_particle_sizes()
+        state[:, :, 3] = self._particle_sizes.expand(self._n_envs, -1)
 
         if progress_label:
             self._log(f"  {progress_label}: done")
@@ -1160,7 +726,7 @@ class SandboxManipulation:
         frozen_pos = self.plate.get_pos()
 
         for step in range(sweep_steps):
-            if self._freeze_reached_envs and reached_goal.any():
+            if reached_goal.any():
                 reached_envs_idx = reached_goal.nonzero().squeeze(dim=1)
                 n_reached = reached_envs_idx.shape[0]
                 self.plate.set_pos(
@@ -1196,15 +762,12 @@ class SandboxManipulation:
             newly_reached = (cur_dist < self._goal_threshold) & ~reached_goal
             frozen_pos = torch.where(newly_reached[:, None], cur_pos, frozen_pos)
             reached_goal |= newly_reached
-            if self._freeze_reached_envs and reached_goal.all():
+            if reached_goal.all():
                 if progress_label:
                     self._log(f"  {progress_label}: all environments reached target at step {step + 1}")
                 break
 
-        if self._freeze_reached_envs:
-            final_pos = torch.where(reached_goal[:, None], frozen_pos, self.plate.get_pos())
-        else:
-            final_pos = torch.where(reached_goal[:, None], p_end, self.plate.get_pos())
+        final_pos = torch.where(reached_goal[:, None], frozen_pos, self.plate.get_pos())
 
         if progress_label:
             self._log(
@@ -1213,7 +776,7 @@ class SandboxManipulation:
                 f"{float(best_dist.max().item()):.4f}m"
             )
 
-        return reached_goal, final_pos, sweep_steps
+        return reached_goal, final_pos
     
     def plate_position_translation(
             self,
@@ -1235,18 +798,21 @@ class SandboxManipulation:
             fix_pose: Pose values for locked DOFs [n_envs, n_dofs] or [n_dofs]
             fix_dofs: Indices of DOFs to lock
         """
+        # Ensure batch dimensions
+        if p_start.shape[0] != self._n_envs:
+            p_start = p_start.unsqueeze(0).expand(self._n_envs, -1)
+        if p_end.shape[0] != self._n_envs:
+            p_end = p_end.unsqueeze(0).expand(self._n_envs, -1)
+        if len(fix_pose.shape) == 1:
+            fix_pose = fix_pose.unsqueeze(0).expand(self._n_envs, -1)
+        
+        t = torch.linspace(0, 1, n_steps, device=gs.device)
+        # Create interpolated path for all environments
+        # path shape: [n_steps, n_envs, 3]
+        path = (1 - t[:, None, None]) * p_start[None, :, :] + t[:, None, None] * p_end[None, :, :]
         
         if progress_label:
             self._log(f"  {progress_label}: moving {n_steps} steps")
-
-        if n_steps <= 1:
-            self.plate.set_pos(pos=p_end)
-            self.plate.set_dofs_position(fix_pose, dofs_idx_local=fix_dofs)
-            self._step_scene(progress_label, 1, 1)
-            return
-
-        t = torch.linspace(0, 1, n_steps, device=gs.device)
-        path = (1 - t[:, None, None]) * p_start[None, :, :] + t[:, None, None] * p_end[None, :, :]
 
         self.plate.set_pos(path[0])
         for i in range(n_steps):
@@ -1319,6 +885,7 @@ class SandboxManipulation:
         Returns:
             Tensor of shape [n_envs] with success status
         """
+
         # Lowering
         fix_pose_lower = torch.stack([
             p_start[:, 0],
@@ -1328,6 +895,7 @@ class SandboxManipulation:
             torch.zeros(self._n_envs, device=gs.device),
             angle
         ], dim=1)
+        
         self.plate_position_translation(
             p_start + lift_height,
             p_start,
@@ -1336,7 +904,8 @@ class SandboxManipulation:
             [0, 1, 3, 4, 5],
             progress_label=f"{progress_label} lower" if progress_label else None,
         )
-        reached_goal, final_pos, _ = self.plate_velocity_translation(
+        
+        reached_goal, final_pos = self.plate_velocity_translation(
             p_start,
             p_stop,
             speed,
@@ -1344,6 +913,7 @@ class SandboxManipulation:
             sweep_steps=sweep_steps,
             progress_label=f"{progress_label} sweep" if progress_label else None,
         )
+
         fix_pose_lift = torch.stack([
             final_pos[:, 0],
             final_pos[:, 1],
@@ -1360,6 +930,7 @@ class SandboxManipulation:
             [0, 1, 3, 4, 5],
             progress_label=f"{progress_label} lift" if progress_label else None,
         )
+
         return reached_goal, final_pos
 
     def collect_data_samples(
@@ -1369,7 +940,6 @@ class SandboxManipulation:
             path : str | Path = "training",
             settle_steps: int | None = None,
             sweep_steps: int | None = None,
-            env_index_offset: int = 0,
         ):
         """
         Collect data samples from all environments efficiently.
@@ -1382,18 +952,13 @@ class SandboxManipulation:
         """
         effective_settle_steps = self._settle_steps if settle_steps is None else settle_steps
         effective_sweep_steps = sweep_steps
-        self._env_index_offset = env_index_offset
 
         self._config.setdefault("data_collection", {})
         self._config["data_collection"].update({
             "n_envs": self._n_envs,
-            "env_index_offset": env_index_offset,
             "samples_per_env": n_samples,
             "speed": speed,
             "settle_steps": effective_settle_steps,
-            "settle_min_steps": self._settle_min_steps,
-            "settle_check_interval": self._settle_check_interval,
-            "settle_threshold": self._settle_threshold,
             "sweep_steps": effective_sweep_steps,
             "sweep_steps_mode": "auto" if effective_sweep_steps is None else "fixed",
             "lower_steps": self._lower_steps,
@@ -1408,7 +973,6 @@ class SandboxManipulation:
             "settle_angular_damping": self._settle_angular_damping,
             "settle_linear_damping": self._settle_linear_damping,
             "settle_sleep_threshold": self._settle_sleep_threshold,
-            "freeze_reached_envs": self._freeze_reached_envs,
         })
 
         self._log(
@@ -1431,26 +995,14 @@ class SandboxManipulation:
             f"Allocating GPU buffers for up to {max_samples} samples "
             f"({n_samples} batches x {self._n_envs} envs)"
         )
-        state_dim = 9
-        states = torch.empty((n_samples, self._n_envs, len(self.material), state_dim), device=gs.device)
+        states = torch.empty((n_samples, self._n_envs, len(self.material), 4), device=gs.device)
         states_ = torch.empty_like(states)
         p_starts = torch.empty((n_samples, self._n_envs, 3), device=gs.device)
         p_stops = torch.empty((n_samples, self._n_envs, 3), device=gs.device)
         sample_angles = torch.empty((n_samples, self._n_envs), device=gs.device)
         success_mask = torch.empty((n_samples, self._n_envs), dtype=torch.bool, device=gs.device)
-        env_indices = torch.arange(self._n_envs, device=gs.device).unsqueeze(0).expand(n_samples, -1)
-        particle_sizes = self._expanded_particle_sizes().unsqueeze(0).expand(n_samples, -1, -1, -1)
-        states[:, :, :, 6:9] = particle_sizes
-        states_[:, :, :, 6:9] = particle_sizes
 
-        current_state = self.get_material_state(
-            settle_steps=effective_settle_steps,
-            progress_label="initial pre-state",
-            out=states[0],
-        )
-        current_state_slot = 0
-
-        for i, sample_idx in enumerate(range(n_samples)):
+        for sample_idx in range(n_samples):
             should_log_batch = (
                 sample_idx == 0
                 or sample_idx == n_samples - 1
@@ -1460,8 +1012,10 @@ class SandboxManipulation:
             if should_log_batch:
                 self._log(f"Collecting action {batch_label}")
 
-            if current_state_slot != sample_idx:
-                states[sample_idx].copy_(current_state)
+            state = self.get_material_state(
+                settle_steps=effective_settle_steps,
+                progress_label=f"{batch_label} pre-state" if should_log_batch else None,
+            )
 
             p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
             p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
@@ -1477,40 +1031,25 @@ class SandboxManipulation:
                 progress_label=batch_label if should_log_batch else None,
             )
 
-            post_state = self.get_material_state(
+            states[sample_idx] = state
+            states_[sample_idx] = self.get_material_state(
                 settle_steps=effective_settle_steps,
                 progress_label=f"{batch_label} post-state" if should_log_batch else None,
-                out=states_[sample_idx],
             )
             p_starts[sample_idx] = p_start
             p_stops[sample_idx] = final_pos
             sample_angles[sample_idx] = angle
             success_mask[sample_idx] = reached_goal
-
-            # Periodically reshuffle particles to ensure diverse interactions and prevent overfitting to specific configurations
-            if i % 5 == 0 and sample_idx + 1 < n_samples:
-                self.shuffle_particles()
-                current_state = self.get_material_state(
-                    settle_steps=effective_settle_steps,
-                    progress_label=f"{batch_label} reshuffled pre-state" if should_log_batch else None,
-                    out=states[sample_idx + 1],
-                )
-                current_state_slot = sample_idx + 1
-            else:
-                current_state = post_state
-                current_state_slot = None
-
             if should_log_batch:
                 self._log(f"Finished action {batch_label}")
 
-        # self._log("Compacting successful samples...")
+        self._log("Compacting successful samples...")
         flat_success_mask = success_mask.reshape(max_samples)
-        self.valid_states = states.reshape(max_samples, len(self.material), state_dim)[flat_success_mask]
-        self.valid_states_ = states_.reshape(max_samples, len(self.material), state_dim)[flat_success_mask]
+        self.valid_states = states.reshape(max_samples, len(self.material), 4)[flat_success_mask]
+        self.valid_states_ = states_.reshape(max_samples, len(self.material), 4)[flat_success_mask]
         self.valid_p_starts = p_starts.reshape(max_samples, 3)[flat_success_mask]
         self.valid_p_stops = p_stops.reshape(max_samples, 3)[flat_success_mask]
         self.valid_angles = sample_angles.reshape(max_samples)[flat_success_mask]
-        self.valid_env_indices = env_indices.reshape(max_samples)[flat_success_mask]
         write_ptr = int(flat_success_mask.sum().item())
 
         # Print statistics
@@ -1532,16 +1071,12 @@ class SandboxManipulation:
         full_path = base_dir / path
         Path.mkdir(full_path, parents=True, exist_ok=True)
 
-        cpu_samples = self._valid_samples_to_cpu()
-        for env_idx in range(self._n_envs):
-            filename_prefix = str(env_index_offset + env_idx)
-            self._save_config(full_path / f"{filename_prefix}_config.yaml", env_idx=env_idx)
-            self._save_env_data_from_cpu(
-                full_path / f"{filename_prefix}_data.pkl",
-                cpu_samples,
-                env_idx,
-            )
-        self._log(f"Saved {self._n_envs} per-env runs to {full_path}.")
+        n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
+        self._save_config(full_path / (str(n_runs) + "_config.yaml"))
+        self._save_data(full_path / (str(n_runs) + "_data.pkl"))
+        self._log(f"Saving run {n_runs} to {full_path}. Run has number {n_runs}.")
+        self._log("Collection complete")
+
         # Clean up GPU memory
         self._cleanup_gpu_memory()
     
@@ -1558,8 +1093,6 @@ class SandboxManipulation:
             del self.valid_p_stops
         if hasattr(self, 'valid_angles'):
             del self.valid_angles
-        if hasattr(self, 'valid_env_indices'):
-            del self.valid_env_indices
 
         # Force garbage collection
         import gc
