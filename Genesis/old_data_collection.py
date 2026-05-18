@@ -15,7 +15,7 @@ from old_sandbox_manipulation import SandboxManipulation
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
 DEFAULT_NUM_PARTICLES = [50]
-DEFAULT_SETTINGS = ["chickspheres_on_wood"]
+DEFAULT_SETTINGS = ["basic"]
 depth = 5
 
 PARTICLE_FRICTIONS = np.linspace(0.03, 0.6, depth)
@@ -177,7 +177,6 @@ def main():
                     sm.set_material_properties(property_setting)
                     sm.collect_data_samples(
                         n_samples=args.samples_per_env,
-                        speed=args.speed,
                         path=f"{args.output_root}/{setting}",
                         settle_steps=args.settle_steps,
                         sweep_steps=args.sweep_steps,
