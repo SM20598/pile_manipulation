@@ -16,19 +16,16 @@ rigid_options:
   use_hibernation: False
 
 box:
-  pos : [0.0, 0.0, 0.0]
   vol : [0.128, 0.128, 0.04]
   wall_thickness : 0.02
-  friction : 0.15
+  friction : None                           # SET IN DATA_COLLECTION LOOP
 material:
-  vol : [0.12, 0.12, 0.05]
-  type : "rsa" 
-  properties :
-    shape : "cube"
-    n_particles : 10
-    particle_size : [0.009, 0.012]
-    density : [1200, 1500]
-    friction : [0.3, 0.55]
+  vol : [0.127, 0.127, 0.05]
+  shape : None                              # SET IN DATA_COLLECTION LOOP
+  particle_size : None                      # SET IN DATA_COLLECTION LOOP
+  n_particles : None                        # SET IN DATA_COLLECTION LOOP
+  density : None                            # SET IN DATA_COLLECTION LOOP
+  friction : None                           # SET IN DATA_COLLECTION LOOP
 safety_margin : 0.005
 
 plate:

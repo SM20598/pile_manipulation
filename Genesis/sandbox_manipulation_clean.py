@@ -18,6 +18,7 @@ class SandboxManipulation:
         config: dict | str | Path,
         n_envs: int = 1,
         debug : bool = False,
+        viewer_type: str | None = None,
     ):
         """
         Initialize sandbox manipulation with multi-environment support.
@@ -40,6 +41,9 @@ class SandboxManipulation:
         self._box_params = self._config["box"]
         self._plate_params = self._config["plate"] 
         self._material_params = self._config["material"]
+        self._config.setdefault("data_collection", {})
+        self._config["data_collection"].setdefault("sampled", {})
+        self._sampled_params = self._config["data_collection"]["sampled"]
         
         self._rigid_options = self._config.get("rigid_options", {})
         
@@ -52,95 +56,79 @@ class SandboxManipulation:
 
         # PARAMETERS FOR TRAINING
         self._wall_thickness = self._box_params.get('wall_thickness', 0.02)
-        self._particle_size = self._material_params["properties"].get('particle_size', 0.01)
         self._granular_vol = self._material_params.get('vol', [0.27, 0.27, 0.1])
-        self._material_type = self._material_params.get('type', 'rsa')
         
-        collection_cfg = self._config.get("data_collection", {})
-        self._settle_steps = collection_cfg.get("settle_steps", 100)
-        self._lower_steps = collection_cfg.get("lower_steps", 100)
-        self._lift_steps = collection_cfg.get("lift_steps", 100)
-        self._goal_threshold = collection_cfg.get("goal_threshold", 0.001)
+        self._settle_steps = 100
+        self._goal_threshold = 0.001
         
-        self._update_visualizer = collection_cfg.get("update_visualizer", False)
         self._debug = debug
+        self._viewer_type = viewer_type
         
         # Multi-environment settings
         self._n_envs = n_envs
 
         self._init_scene()
         self._add_entities()
-
-        self._particle_sizes = None
-        self._particle_links_idx = None
-        self._particle_dofs_idx = None
-        self._particle_linear_dofs_idx = None
-        self._particle_angular_dofs_idx = None
-        
-        
-         
         
         ###########
         # HELPERS #
         ###########
         
         # operation height
-        p_height = self._particle_size/2 if isinstance(self._particle_size, float) else min(self._particle_size)/4
+        particle_size = self._material_params["particle_size"]
+        p_height = particle_size/2 if isinstance(particle_size, float) else min(particle_size)/4
         self._operation_height = self._wall_thickness/2 + p_height + self._plate_params["size"][2]/2
-        
-        # helpers to fix all dofs except x, y during sweeping
-        self._vertical_dofs_local = [2, 3, 4, 5] 
-        self._horizontal_dof_fix = torch.zeros((self._n_envs, 4), device=gs.device)
-        self._horizontal_dof_fix[:, 0] = self._operation_height
         
         # lift height for plate
         lift_height = self._box_params["vol"][2]
         self._lift_height_tensor = torch.tensor([0, 0, lift_height], device=gs.device).expand(self._n_envs, -1)
         
         # used to create path for position control
-        self._steps_0to1 = torch.linspace(0, 1, 100, device=gs.device)
+        self._pos_ctrl_steps = 100
+        self._steps_0to1 = torch.linspace(0, 1, self._pos_ctrl_steps, device=gs.device)
         
         # helpers to fix all dofs except z during lowering and lifting
         self._vertical_dofs_local = [0, 1, 3, 4, 5] 
         self._vertical_dof_fix = torch.zeros((self._n_envs, 5), device=gs.device)
 
+        # helpers to fix all dofs except x, y during sweeping
+        self._horizontal_dofs_local = [2, 3, 4, 5] 
+        self._horizontal_dof_fix = torch.zeros((self._n_envs, 4), device=gs.device)
+        self._horizontal_dof_fix[:, 0] = self._operation_height
+
+        self._particle_state = torch.empty((self._n_envs, self._material_params["n_particles"], 7), device=gs.device)
+
+
     def _log(self, message: str):
         print(message, flush=True)
 
-    def _step_scene(self, label: str | None = None, step: int | None = None, total_steps: int | None = None):
+    def _step_scene(self):
                     
         self._scene.step(
-            update_visualizer=self._update_visualizer,
-            refresh_visualizer=self._update_visualizer,
+            update_visualizer=self._debug,
+            refresh_visualizer=self._debug,
         )
 
     def _init_scene(self):
-        viewer_settings = self._config["simulation"].get('viewer_options', dict())
-        viz_settings = self._config["simulation"].get('viz_options', dict())
+        v_x, _, v_z = self._box_params["vol"]
         resolution = (1280, 1280)
-
-        v_x, v_y, v_z = self._box_params["vol"]
-        l_bound = (-2*v_x, -2*v_y, -2*v_z)
-        u_bound = (2*v_x, 2*v_y, 2*v_z+self._wall_thickness)
-
-        viewer_type = viewer_settings.get('viewer_type', None)
         
-        if viewer_type == "observer":
+        if self._viewer_type == "observer":
             viewer_options = gs.options.ViewerOptions(
-                camera_pos    = viewer_settings.get('camera_pos', [3 * v_x, 0.0, 10*v_z]),
-                camera_lookat = viewer_settings.get('camera_lookat', [0.0, 0.0, v_z/2]),
+                camera_pos    = [3 * v_x, 0.0, 3*v_z],
+                camera_lookat = [0.0, 0.0, v_z/2],
                 res           = resolution,
             )
-        elif viewer_type == "bird":
+        elif self._viewer_type == "bird":
             viewer_options = gs.options.ViewerOptions(
-                camera_pos    = viewer_settings.get('camera_pos', [0, 0, 10*v_z]),
-                camera_lookat = viewer_settings.get('camera_lookat', [0.0, 0.0, 0.0]),
+                camera_pos    = [0, 0, 10*v_z],
+                camera_lookat = [0.0, 0.0, 0.0],
                 res           = resolution,
             )
-        elif viewer_type == "leveled":
+        elif self._viewer_type == "leveled":
             viewer_options = gs.options.ViewerOptions(
-                camera_pos    = viewer_settings.get('camera_pos', [1.5, 0, b_z]),
-                camera_lookat = viewer_settings.get('camera_lookat', [0.5, 0.0, 0.2]),
+                camera_pos    = [1.5, 0, v_z],
+                camera_lookat = [0.0, 0.0, v_z],
                 res           = resolution,
             )
         else:
@@ -148,7 +136,6 @@ class SandboxManipulation:
             viewer_options = None
 
         rigid_cfg = self._config.get("rigid_options", {})
-
         self._scene = gs.Scene(
             sim_options=gs.options.SimOptions(
                 dt       = self._config["simulation"].get('dt', 4e3),
@@ -167,20 +154,19 @@ class SandboxManipulation:
             ),
             viewer_options = viewer_options,
             vis_options=gs.options.VisOptions(
-                show_link_frame=viz_settings.get('show_link_frame', False),
+                show_link_frame=self._debug and self._viewer_type == "observer",
             ),
-            show_viewer=viewer_settings.get('show_viewer', False)
+            show_viewer=self._debug
         )
-        self._scene.profiling_options.show_FPS = viz_settings.get('show_FPS', False)
+        self._scene.profiling_options.show_FPS=False
     
     def _add_entities(self):
         width, depth, height = self._box_params["vol"]
 
-        def add_box_entity(pos, size, rho=1000, color=[0, 0, 0]):
-            material = gs.materials.Rigid(rho=rho)
+        def add_box_entity(pos, size):
             box = gs.morphs.Box(pos=pos, size=size, fixed=True)
-            surface = gs.surfaces.Default(color=color)
-            return self._scene.add_entity(material=material, morph=box, surface=surface)
+            surface = gs.surfaces.Default(color=[0, 0, 0])
+            return self._scene.add_entity(morph=box, surface=surface)
         
         # floor        
         self.plane = self._scene.add_entity(gs.morphs.Plane())
@@ -210,27 +196,35 @@ class SandboxManipulation:
         }
         
         # add tool
-        self.plate = add_box_entity(
-            pos=(0, 0, height * 2),
-            size=self._plate_params["size"], 
-            rho=self._plate_params.get("rho", 3000),
-            color=[0, 1, 0]
+        self.plate = self._scene.add_entity(
+            material=gs.materials.Rigid(
+                rho=3000,
+            ),
+            morph=gs.morphs.Box(
+                pos=(0, 0, height * 2),
+                size=self._plate_params["size"]
+            ),
+            surface=gs.surfaces.Default(color=[0, 1, 0])
         )
         
         # add granular
-        material_properties = self._material_params.get('properties', {})
         self._safety_margin = 0.02
 
-        self.material = random_sequential_addition(
+        particle_size = self._sampled_params.get(
+            "particle_size",
+            self._material_params["particle_size"],
+        )
+        self.material, particle_sizes = random_sequential_addition(
             scene=self._scene,
-            box_pos=(0, 0, 0),
             granular_vol=self._granular_vol,
-            material_properties=material_properties,
+            shape=self._material_params["shape"],
+            num_particles=self._material_params["n_particles"],
+            particle_size=particle_size,
             wall_thickness=self._wall_thickness,
-            color=[1.0, 1.0, 0.0]
-        )                    
+        )      
+        self._config["data_collection"]["sampled"].update({"particle_sizes": particle_sizes})
 
-    def _save_data(self, path : str | Path, flat_success_mask : torch.Tensor):
+    def _save_data(self, path : str | Path, flat_success_mask : torch.Tensor, max_samples : int):
         """
         Save data in the legacy list-of-dicts pickle format.
 
@@ -239,11 +233,11 @@ class SandboxManipulation:
         than the row itself needs.
         """
         
-        valid_states = self._states.reshape(max_samples, len(self.material), state_dim)[flat_success_mask]
-        valid_states_ = self._states_.reshape(max_samples, len(self.material), state_dim)[flat_success_mask]
-        valid_p_starts = self._p_starts.reshape(max_samples, 3)[flat_success_mask]
-        valid_p_stops = self._p_stops.reshape(max_samples, 3)[flat_success_mask]
-        valid_angles = self._sample_angles.reshape(max_samples)[flat_success_mask]
+        valid_states = self._collection_buffers["states"].reshape(max_samples, len(self.material), 7)[flat_success_mask]
+        valid_states_ = self._collection_buffers["states_"].reshape(max_samples, len(self.material), 7)[flat_success_mask]
+        valid_p_starts = self._collection_buffers["p_starts"].reshape(max_samples, 3)[flat_success_mask]
+        valid_p_stops = self._collection_buffers["p_stops"].reshape(max_samples, 3)[flat_success_mask]
+        valid_angles = self._collection_buffers["sample_angles"].reshape(max_samples)[flat_success_mask]
         
         path = Path(path)
         use_non_blocking = any(
@@ -283,6 +277,18 @@ class SandboxManipulation:
         ):
         with open(path, 'w') as outfile:
             yaml.dump(self._config, outfile, default_flow_style=False)
+
+    def _allocate_collection_buffers(self, n_samples: int):
+        """Allocate persistent GPU buffers for repeated data collection."""
+        state_dim = 7
+        self._collection_buffers = {
+            "states" : torch.empty((n_samples, self._n_envs, len(self.material), state_dim), device=gs.device),
+            "states_" : torch.empty((n_samples, self._n_envs, len(self.material), state_dim), device=gs.device),
+            "p_starts" : torch.empty((n_samples, self._n_envs, 3), device=gs.device),
+            "p_stops" : torch.empty((n_samples, self._n_envs, 3), device=gs.device),
+            "sample_angles" : torch.empty((n_samples, self._n_envs), device=gs.device),
+            "success_mask" : torch.empty((n_samples, self._n_envs), dtype=torch.bool, device=gs.device),
+        }
        
     def build(self):
         """Build the scene with multiple environments"""
@@ -294,43 +300,30 @@ class SandboxManipulation:
         dofs_idx = [0, 1, 2, 3, 4, 5]
         self.plate.set_dofs_kp((0.8,) * 6, dofs_idx)
         self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
-        self._cache_particle_sizes()
 
-    def _cache_particle_sizes(self):
-        sizes = []
+        self._cache_particle_idx()
+
+    def _cache_particle_idx(self):
         links_idx = []
         dofs_idx = []
-        linear_dofs_idx = []
-        angular_dofs_idx = []
-        for particle in self.material:
-            size = particle.morph.size[0] if hasattr(particle.morph, "size") else particle.morph.radius * 2
-            sizes.append(float(size))
+        for i, particle in enumerate(self.material):
             links_idx.append(particle.link_start)
             if particle.n_dofs == 6:
-                particle_dofs = list(range(particle.dof_start, particle.dof_end))
-                dofs_idx.extend(particle_dofs)
-                linear_dofs_idx.extend(particle_dofs[:3])
-                angular_dofs_idx.extend(particle_dofs[3:])
+                dofs_idx.extend(range(particle.dof_start, particle.dof_end))
                 
-        self._particle_sizes = torch.tensor(sizes, device=gs.device).view(1, -1)
         self._particle_links_idx = torch.tensor(links_idx, dtype=gs.tc_int, device=gs.device)
         self._particle_dofs_idx = torch.tensor(dofs_idx, dtype=gs.tc_int, device=gs.device)
-        self._particle_linear_dofs_idx = torch.tensor(linear_dofs_idx, dtype=gs.tc_int, device=gs.device)
-        self._particle_angular_dofs_idx = torch.tensor(angular_dofs_idx, dtype=gs.tc_int, device=gs.device)
 
     def _sample_particle_property(self, value, *, min_value: float | None = None):
         n_particles = len(self.material)
         if isinstance(value, (int, float)):
             values = np.full(n_particles, float(value), dtype=np.float32)
         else:
-            if len(value) == 2:
-                values = np.random.uniform(float(value[0]), float(value[1]), n_particles).astype(np.float32)
-            elif len(value) == n_particles:
-                values = np.asarray(value, dtype=np.float32)
+            if len(value) >= n_particles:
+                values = np.asarray(value[:n_particles], dtype=np.float32)
             else:
                 raise ValueError(
-                    "Particle property must be a scalar, [min, max], "
-                    "or one value per particle."
+                    "Particle property must be a scalar or a list with the same length as the number of particles"
                 )
         if min_value is not None:
             values = np.maximum(values, min_value)
@@ -342,30 +335,6 @@ class SandboxManipulation:
         if getattr(self._scene, "is_built", False) and old_density is not None and old_density > 0:
             particle.set_mass(particle.get_mass() * (float(density) / float(old_density)))
 
-    def _allocate_collection_buffers(self, n_samples: int):
-        """Allocate persistent GPU buffers for repeated data collection."""
-        state_dim = 7
-        max_samples = n_samples * self._n_envs
-        
-        # self._collection_buffers = {
-        #     'states': torch.empty((max_samples, len(self.material), state_dim), device=gs.device),
-        #     'states_': torch.empty((max_samples, len(self.material), state_dim), device=gs.device),
-        #     'p_starts': torch.empty((max_samples, 3), device=gs.device),
-        #     'p_stops': torch.empty((max_samples, 3), device=gs.device),
-        #     'angles': torch.empty((max_samples,), device=gs.device),
-        #     'env_indices': torch.empty((max_samples,), dtype=torch.long, device=gs.device),
-        #     'success_mask': torch.empty((max_samples,), dtype=torch.bool, device=gs.device),
-        # }
-        
-        self._collection_buffers = {
-            "states" : torch.empty((n_samples, self._n_envs, len(self.material), state_dim), device=gs.device),
-            "states_" : torch.empty((n_samples, self._n_envs, len(self.material), state_dim), device=gs.device),
-            "p_starts" : torch.empty((n_samples, self._n_envs, 3), device=gs.device),
-            "p_stops" : torch.empty((n_samples, self._n_envs, 3), device=gs.device),
-            "sample_angles" : torch.empty((n_samples, self._n_envs), device=gs.device),
-            "success_mask" : torch.empty((n_samples, self._n_envs), dtype=torch.bool, device=gs.device),
-        }
-
     def set_material_properties(self, setting):
         """
         Set one material configuration shared by all parallel environments.
@@ -373,65 +342,144 @@ class SandboxManipulation:
         This keeps Genesis on the fast shared link-info path. Density changes
         are applied as scalar entity mass updates, not per-environment masses.
         """
-        if self._material_type != "rsa":
-            raise NotImplementedError("Shared material property updates are only implemented for RSA particles.")
-
-        particle_frictions = self._sample_particle_property(setting["particle_friction"], min_value=1e-2)
-        particle_densities = self._sample_particle_property(setting["particle_density"], min_value=gs.EPS)
-        table_friction = max(float(setting["table_friction"]), 1e-2)
+        particle_friction = (
+            setting["sampled_particle_friction"]
+            if setting.get("sampled_particle_friction") is not None
+            else setting["particle_friction"]
+        )
+        particle_density = (
+            setting["sampled_particle_density"]
+            if setting.get("sampled_particle_density") is not None
+            else setting["particle_density"]
+        )
+        particle_frictions = self._sample_particle_property(particle_friction, min_value=1e-2)
+        particle_densities = self._sample_particle_property(particle_density, min_value=gs.EPS)
+        box_friction = max(float(setting["box_friction"]), 1e-2)
 
         for particle_idx, particle in enumerate(self.material):
             particle.set_friction(float(particle_frictions[particle_idx]))
             self._set_particle_density_value(particle, float(particle_densities[particle_idx]))
 
-        if hasattr(self, "box_parts"):
-            for part in self.box_parts.values():
-                part.set_friction(table_friction)
-        if hasattr(self, "plane") and getattr(self.plane, "material", None) is not None:
-            self.plane.set_friction(table_friction)
+        for part in self.box_parts.values():
+            part.set_friction(box_friction)
 
-        material_properties = self._config["material"].setdefault("properties", {})
-        material_properties["sampled_friction"] = particle_frictions.tolist()
-        material_properties["sampled_density"] = particle_densities.tolist()
-        self._config["box"].setdefault("properties", {})["friction"] = table_friction
+        # save to config dict
+        self._material_params["friction"] = setting["particle_friction"]
+        self._material_params["density"] = setting["particle_density"]
+        self._box_params["friction"] = setting["box_friction"]
+        self._sampled_params.pop("friction", None)
+        self._sampled_params.pop("density", None)
+        if setting.get("sampled_particle_friction") is not None:
+            self._sampled_params["friction"] = particle_frictions.tolist()
+        if setting.get("sampled_particle_density") is not None:
+            self._sampled_params["density"] = particle_densities.tolist()
+        self._sampled_params["box_friction"] = box_friction
 
-        metadata = dict(setting.get("metadata", {}))
-        metadata.update(
-            {
-                "particle_friction": material_properties["sampled_friction"],
-                "particle_density": material_properties["sampled_density"],
-                "table_friction": table_friction,
-            }
+    def shuffle_particles(self):
+        n_particles = len(self.material)
+        if n_particles == 0:
+            return
+
+        size_values = self._sampled_params.get("particle_sizes", None)
+        if size_values is None:
+            size_values = [
+                particle.morph.size if hasattr(particle.morph, "size")
+                else (particle.morph.radius * 2,) * 3
+                for particle in self.material
+            ]
+        sizes = torch.as_tensor(size_values, dtype=torch.float32, device=gs.device)
+        half_extents = sizes * 0.5
+
+        width, depth, height = self._box_params["vol"]
+        wall = float(self._wall_thickness)
+        inner_min = torch.tensor([-width / 2, -depth / 2, wall / 2], device=gs.device)
+        inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
+        lower = inner_min + half_extents
+        upper = inner_max - half_extents
+        if (upper[:, :2] < lower[:, :2]).any():
+            raise ValueError("At least one particle is too large to fit inside the box.")
+
+        positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
+        placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
+        order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
+        candidate_batch = max(1024, min(4096, 64 * n_particles))
+        min_gap = 1e-4
+
+        for particle_idx_tensor in order:
+            particle_idx = int(particle_idx_tensor.item())
+            active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
+            span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
+            z_pos = inner_min[2] + half_extents[particle_idx, 2] + min_gap
+            for _ in range(128):
+                active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+                if active_idx.numel() == 0:
+                    break
+                candidate_xy = (
+                    torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
+                    * span_xy
+                    + lower[particle_idx, :2]
+                )
+                placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
+                if placed_idx.numel() == 0:
+                    valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
+                else:
+                    delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
+                    min_sep = half_extents[particle_idx, :2] + half_extents[placed_idx, :2] + min_gap
+                    valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
+                has_valid = valid.any(dim=1)
+                accepted = active_idx[has_valid]
+                first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
+                positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
+                positions[accepted, particle_idx, 2] = z_pos
+                active[accepted] = False
+            if active.any():
+                raise RuntimeError(
+                    "Could not randomly shuffle particles without overlap. "
+                    "Try a smaller particle size or fewer particles."
+                )
+            placed[particle_idx] = True
+
+        envs_idx = torch.arange(self._n_envs, device=gs.device)
+        for particle_idx, particle in enumerate(self.material):
+            particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
+            particle.set_quat(self._random_particle_quats(particle, self._n_envs), envs_idx=envs_idx)
+        if self._particle_dofs_idx.numel() > 0:
+            self._scene.rigid_solver.set_dofs_velocity(
+                torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
+                dofs_idx=self._particle_dofs_idx,
+                skip_forward=True,
+            )
+
+    shuffle_position = shuffle_particles
+
+    def _random_particle_quats(self, particle, n_envs: int) -> torch.Tensor:
+        if not hasattr(particle.morph, "size") and not hasattr(particle.morph, "height"):
+            return torch.tensor((1.0, 0.0, 0.0, 0.0), device=gs.device).repeat(n_envs, 1)
+
+        roll = torch.zeros(n_envs, device=gs.device)
+        pitch = torch.zeros(n_envs, device=gs.device)
+        yaw = torch.rand(n_envs, device=gs.device) * math.tau
+
+        cr, sr = torch.cos(roll * 0.5), torch.sin(roll * 0.5)
+        cp, sp = torch.cos(pitch * 0.5), torch.sin(pitch * 0.5)
+        cy, sy = torch.cos(yaw * 0.5), torch.sin(yaw * 0.5)
+        return torch.stack(
+            (
+                cr * cp * cy + sr * sp * sy,
+                sr * cp * cy - cr * sp * sy,
+                cr * sp * cy + sr * cp * sy,
+                cr * cp * sy - sr * sp * cy,
+            ),
+            dim=1,
         )
-        self._env_property_metadata = [dict(metadata) for _ in range(self._n_envs)]
-
-        self._config["data_collection_property_sweep"] = {
-            "mode": "shared_batch",
-            "n_property_envs": self._n_envs,
-            "env_settings": self._env_property_metadata,
-        }
-        return {
-            "particle_friction": particle_frictions,
-            "particle_density": particle_densities,
-            "table_friction": table_friction,
-        }
 
     def _get_particle_positions(self):
-        if self._particle_links_idx is not None:
-            return self._scene.rigid_solver.get_links_pos(links_idx=self._particle_links_idx)
-
-        positions = torch.empty((self._n_envs, len(self.material), 3), device=gs.device)
-        for particle_idx, particle in enumerate(self.material):
-            positions[:, particle_idx, :] = particle.get_pos()
-        return positions
+        return self._scene.rigid_solver.get_links_pos(links_idx=self._particle_links_idx)
 
     def _get_particle_quats(self):
-        if self._particle_links_idx is not None:
-            return self._scene.rigid_solver.get_links_quat(links_idx=self._particle_links_idx)
-        else:
-            print("DANKSDN:KS")
+        return self._scene.rigid_solver.get_links_quat(links_idx=self._particle_links_idx)
 
-    def get_material_state(self, settle_steps: int | None = None):
+    def get_material_state(self):
         """
         Returns particle state (positions and sizes) for all environments.
         Optimized for GPU processing.
@@ -439,10 +487,6 @@ class SandboxManipulation:
         Returns:
             Tensor of shape [n_envs, n_particles, 4] with (x, y, z, size)
         """
-
-        n_p = len(self.material)
-        if settle_steps is None:
-            settle_steps = self._settle_steps
 
         # Hold plate still
         self.plate.set_pos(self.plate.get_pos())
@@ -453,131 +497,19 @@ class SandboxManipulation:
         )
 
         frozen_plate_dofs = self.plate.get_dofs_position()
-        for step in range(settle_steps):
+        for _ in range(self._settle_steps):
             self.plate.set_dofs_position(frozen_plate_dofs)
             self._step_scene()
 
-        state = torch.empty((self._n_envs, n_p, 7), device=gs.device)
-        state[:, :, 0:3] = self._get_particle_positions()
-
-        if self._particle_sizes is None:
-            self._cache_particle_sizes()
-        state[:, :, 3:] = self._get_particle_quats()
-
-        return state
+        self._particle_state[:, :, 0:3] = self._get_particle_positions()
+        self._particle_state[:, :, 3:] = self._get_particle_quats()
+        return self._particle_state
     
     def plate_velocity_translation(
             self,
             p_start,
             p_end,
             angle,
-            sweep_steps: int | None = None,
-            debug=False,
-        ):
-        """
-        Move plates with velocity control across all environments.
-        
-        Args:
-            p_start: Starting positions [n_envs, 3] or [3]
-            p_end: Ending positions [n_envs, 3] or [3]
-            speed: Movement speed (scalar)
-            angle: Rotation angle (scalar)
-        Returns:
-            reached_goal : Mask of environments that reached the goal
-        """
-        speed = 0.125
-        if debug:
-            self._scene.clear_debug_objects()
-            T_start = gu.trans_to_T(p_start[0])
-            T_end = gu.trans_to_T(p_end[0])
-            self._scene.draw_debug_frame(T_start, axis_length=0.05, origin_size=0.001, axis_radius=0.001)
-            self._scene.draw_debug_frame(T_end, axis_length=0.05, origin_size=0.001, axis_radius=0.001)
-        
-        operation_height = getattr(self, "_action_operation_height", self._operation_height)
-
-        # Horizontal movement
-        fix_z_and_rot = torch.stack([
-            # x is free dof
-            # y is free dof
-            torch.full((self._n_envs,), operation_height, device=gs.device),
-            torch.zeros(self._n_envs, device=gs.device),
-            torch.zeros(self._n_envs, device=gs.device),
-            angle
-        ], dim=1)
-
-
-        # Calculate velocity vector for each environment
-        delta = p_end - p_start  # [n_envs, 3]
-        dist = torch.linalg.norm(delta, axis=1, keepdim=True)  # [n_envs, 1]  
-        direction = delta / (dist + 1e-8)
-        v = direction * speed  # [n_envs, 3]
-
-        # Set initial position, velocity and goal for all plates in all environments
-        self.plate.set_pos(p_start)
-        self.plate.control_dofs_position_velocity(p_end, v, dofs_idx_local=[0, 1, 2])
-        
-        if sweep_steps is None:
-            max_sweep_distance = float(dist.max().item())
-            sweep_steps = max(1, math.ceil(max_sweep_distance / (speed * self._scene.dt) * 1.7))
-            
-
-        reached_goal = torch.zeros(self._n_envs, dtype=torch.bool, device=gs.device)
-        best_dist = torch.full((self._n_envs,), torch.inf, device=gs.device)
-        frozen_pos = self.plate.get_pos()
-
-        for step in range(sweep_steps):
-            if self._freeze_reached_envs and reached_goal.any():
-                reached_envs_idx = reached_goal.nonzero().squeeze(dim=1)
-                n_reached = reached_envs_idx.shape[0]
-                self.plate.set_pos(
-                    frozen_pos[reached_goal],
-                    envs_idx=reached_envs_idx,
-                    zero_velocity=True,
-                )
-                self.plate.set_dofs_position(
-                    torch.stack([
-                        frozen_pos[reached_goal, 0],
-                        frozen_pos[reached_goal, 1],
-                        torch.full((n_reached,), operation_height, device=gs.device),
-                        torch.zeros(n_reached, device=gs.device),
-                        torch.zeros(n_reached, device=gs.device),
-                        angle[reached_goal],
-                    ], dim=1),
-                    dofs_idx_local=[0, 1, 2, 3, 4, 5],
-                    envs_idx=reached_envs_idx,
-                    zero_velocity=True,
-                )
-
-            self.plate.set_dofs_position(
-                fix_z_and_rot,
-                dofs_idx_local=[2, 3, 4, 5],
-            )
-            self._step_scene()
-
-            cur_pos = self.plate.get_pos()
-            cur_dist = torch.linalg.norm(cur_pos[:, :2] - p_end[:, :2], axis=1)
-            improved = cur_dist < best_dist
-            best_dist = torch.where(improved, cur_dist, best_dist)
-            newly_reached = (cur_dist < self._goal_threshold) & ~reached_goal
-            frozen_pos = torch.where(newly_reached[:, None], cur_pos, frozen_pos)
-            reached_goal |= newly_reached
-            if self._freeze_reached_envs and reached_goal.all():
-                break
-
-        if self._freeze_reached_envs:
-            final_pos = torch.where(reached_goal[:, None], frozen_pos, self.plate.get_pos())
-        else:
-            final_pos = torch.where(reached_goal[:, None], p_end, self.plate.get_pos())
-
-
-        return reached_goal, final_pos, sweep_steps
-    
-    def _plate_velocity_translation(
-            self,
-            p_start,
-            p_end,
-            angle,
-            sweep_steps: int | None = None,
             debug=False,
         ):
         """
@@ -599,16 +531,7 @@ class SandboxManipulation:
             self._scene.draw_debug_frame(T_end, axis_length=0.05, origin_size=0.001, axis_radius=0.001)
         
         # Horizontal movement
-        self._horizontal_dof_fix[:, -1] = angle  # Set rotation for all envs
-        # fix_z_and_rot = torch.stack([
-        #     # x is free dof
-        #     # y is free dof
-        #     torch.full((self._n_envs,), self._operation_height, device=gs.device),
-        #     torch.zeros(self._n_envs, device=gs.device),
-        #     torch.zeros(self._n_envs, device=gs.device),
-        #     angle
-        # ], dim=1)
-
+        self._horizontal_dof_fix[:, -1] = angle 
 
         # Calculate velocity vector for each environment
         delta = p_end - p_start  # [n_envs, 3]
@@ -620,9 +543,8 @@ class SandboxManipulation:
         self.plate.set_pos(p_start)
         self.plate.control_dofs_position_velocity(p_end, v, dofs_idx_local=[0, 1, 2])
         
-        if sweep_steps is None:
-            max_sweep_distance = float(dist.max().item())
-            sweep_steps = max(1, math.ceil(max_sweep_distance / (self._plate_params["speed"] * self._scene.dt) * 1.7))
+        max_sweep_distance = float(dist.max().item())
+        sweep_steps = max(1, math.ceil(max_sweep_distance / (self._plate_params["speed"] * self._scene.dt) * 1.7))
         
         reached_goal = torch.zeros(self._n_envs, dtype=torch.bool, device=gs.device)
         best_dist = torch.full((self._n_envs,), torch.inf, device=gs.device)
@@ -641,7 +563,7 @@ class SandboxManipulation:
                     torch.stack([
                         frozen_pos[reached_goal, 0],
                         frozen_pos[reached_goal, 1],
-                        torch.full((n_reached,), operation_height, device=gs.device),
+                        torch.full((n_reached,), self._operation_height, device=gs.device),
                         torch.zeros(n_reached, device=gs.device),
                         torch.zeros(n_reached, device=gs.device),
                         angle[reached_goal],
@@ -653,7 +575,7 @@ class SandboxManipulation:
 
             self.plate.set_dofs_position(
                 self._horizontal_dof_fix,
-                dofs_idx_local=[2, 3, 4, 5],
+                dofs_idx_local=self._horizontal_dofs_local,
             )
             self._step_scene()
 
@@ -671,15 +593,16 @@ class SandboxManipulation:
 
         final_pos = torch.where(reached_goal[:, None], frozen_pos, self.plate.get_pos())
 
-        print(
-            f" > Goal reached : {int(reached_goal.sum().item())}/{self._n_envs}; "
-            f" > Best distance range {float(best_dist.min().item()):.4f}-"
-            f"{float(best_dist.max().item()):.4f}m"
-        )
+        if self._debug:
+            print(
+                f" > Goal reached : {int(reached_goal.sum().item())}/{self._n_envs}; "
+                f" > Best distance range {float(best_dist.min().item()):.4f}-"
+                f"{float(best_dist.max().item()):.4f}m"
+            )
 
         return reached_goal, final_pos
     
-    def plate_position_translation(self, p_start, p_end, n_steps):
+    def plate_position_translation(self, p_start, p_end):
         """
         Move plates with position control across all environments.
         
@@ -689,9 +612,9 @@ class SandboxManipulation:
             n_steps: Number of steps for interpolation
         """        
         path = (1 - self._steps_0to1[:, None, None]) * p_start[None, :, :] + self._steps_0to1[:, None, None] * p_end[None, :, :]
-
+        
         self.plate.set_pos(p_start)
-        for i in range(n_steps):
+        for i in range(self._pos_ctrl_steps):
             self.plate.set_pos(pos=path[i])
             self.plate.set_dofs_position(
                 position=self._vertical_dof_fix,
@@ -743,7 +666,6 @@ class SandboxManipulation:
             p_start,
             p_stop,
             angle,
-            sweep_steps: int | None = None,
         ):
         """
         Execute action (lower, sweep, lift) for all environments.
@@ -759,22 +681,12 @@ class SandboxManipulation:
         """
 
         # Lowering
-        # fix_pose_lower = torch.stack([
-        #     p_start[:, 0],
-        #     p_start[:, 1],
-        #     # z is free dof 
-        #     torch.zeros(self._n_envs, device=gs.device),
-        #     torch.zeros(self._n_envs, device=gs.device),
-        #     angle
-        # ], dim=1)
         self._vertical_dof_fix[:, 0] = p_start[:, 0]
         self._vertical_dof_fix[:, 1] = p_start[:, 1]
-        self._vertical_dof_fix[:, 3] = angle
-        
+        self._vertical_dof_fix[:, 4] = angle
         self.plate_position_translation(
             p_start + self._lift_height_tensor,
             p_start,
-            self._lower_steps,
         )
         
         # Sweeping
@@ -782,23 +694,14 @@ class SandboxManipulation:
             p_start,
             p_stop,
             angle,
-            sweep_steps=sweep_steps,
         )
 
-        # fix_pose_lift = torch.stack([
-        #     final_pos[:, 0],
-        #     final_pos[:, 1],
-        #     torch.zeros(self._n_envs, device=gs.device),
-        #     torch.zeros(self._n_envs, device=gs.device),
-        #     angle
-        # ], dim=1)
+        # Lifting
         self._vertical_dof_fix[:, 0] = final_pos[:, 0]
         self._vertical_dof_fix[:, 1] = final_pos[:, 1]
-
         self.plate_position_translation(
             final_pos,
             final_pos + self._lift_height_tensor,
-            self._lift_steps,
         )
 
         return reached_goal, final_pos
@@ -807,8 +710,6 @@ class SandboxManipulation:
             self,
             n_samples: int = 200,
             path : str | Path = "training",
-            settle_steps: int | None = None,
-            sweep_steps: int | None = None,
         ):
         """
         Collect data samples from all environments efficiently.
@@ -819,19 +720,10 @@ class SandboxManipulation:
             path: Output path for data
         """
         max_samples = n_samples * self._n_envs
-        
-        effective_settle_steps = self._settle_steps if settle_steps is None else settle_steps
-        effective_sweep_steps = sweep_steps
 
-        self._config.setdefault("data_collection", {})
         self._config["data_collection"].update({
             "n_envs": self._n_envs,
             "samples_per_env": n_samples,
-            "settle_steps": effective_settle_steps,
-            "sweep_steps": effective_sweep_steps,
-            "sweep_steps_mode": "auto" if effective_sweep_steps is None else "fixed",
-            "lower_steps": self._lower_steps,
-            "lift_steps": self._lift_steps,
             "goal_threshold": self._goal_threshold,
         })
 
@@ -850,24 +742,19 @@ class SandboxManipulation:
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
 
-            state = self.get_material_state(effective_settle_steps)
+            state = self.get_material_state()
 
             p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
             p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
             angle = angles[:, sample_idx]              # [n_envs]
 
-            print("p_start:", p_start)
-            print("p_stop:", p_stop)
-            print("angle:", angle)
-
             reached_goal, p_stop = self.execute_action(
                 p_start,
                 p_stop,
                 angle,
-                sweep_steps=effective_sweep_steps,
             )
             
-            state_ = self.get_material_state(effective_settle_steps)
+            state_ = self.get_material_state()
 
             self._collection_buffers["states"][sample_idx] = state
             self._collection_buffers["states_"][sample_idx] = state_
@@ -877,7 +764,7 @@ class SandboxManipulation:
             self._collection_buffers["success_mask"][sample_idx] = reached_goal
             
         # Number of collected samples
-        flat_success_mask = self._success_mask.reshape(max_samples)
+        flat_success_mask = self._collection_buffers["success_mask"].reshape(max_samples)
         num_collected_samples = int(flat_success_mask.sum().item())
 
         # Print statistics
@@ -889,10 +776,10 @@ class SandboxManipulation:
         print(f">> Number of failed samples : {max_samples - num_collected_samples}")
 
         self._config["statistics"] = {
-            "Number of environments"   : self._n_envs,
-            "Samples per environment"  : n_samples,
-            "Total samples collected"  : num_collected_samples,
-            "Number of failed samples" : max_samples - num_collected_samples,
+            "n_envs"   : self._n_envs,
+            "samples_per_env"  : n_samples,
+            "total_samples_collected"  : num_collected_samples,
+            "number_of_failed_samples" : max_samples - num_collected_samples,
         }
 
         base_dir = Path(__file__).parent
@@ -902,7 +789,7 @@ class SandboxManipulation:
         # look for number of runs in existing dict
         n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
         self._save_config(full_path / (str(n_runs) + "_config.yaml"))
-        self._save_data(full_path / (str(n_runs) + "_data.pkl"), flat_success_mask)
+        self._save_data(full_path / (str(n_runs) + "_data.pkl"), flat_success_mask, max_samples)
         self._log(f"Material batch finished. Run {n_runs} saved to {full_path}.")
 
     def destroy(self):
