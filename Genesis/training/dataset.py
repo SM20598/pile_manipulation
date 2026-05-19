@@ -16,6 +16,17 @@ class PileSweepData(Dataset):
         
         parentpath = Path(__file__).parent.parent
         
+        if run is not None:
+            runs = [
+                (full_path / f'{run}_data.pkl', full_path / f'{run}_config.yaml')
+            ]
+        else:
+            runs = sorted([
+                (full_path / f'{f}', full_path / f'{f.replace("_data.pkl", "_config.yaml")}')
+                for f in os.listdir(full_path)
+                if f.endswith('_data.pkl')
+            ])
+
         self.samples = []
         self.configs = []
         for path in paths:
