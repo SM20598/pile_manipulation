@@ -15,7 +15,7 @@ from sandbox_manipulation import SandboxManipulation
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
-DEFAULT_SETTINGS = ["basic"]
+DEFAULT_SETTINGS = ["basic_example"]
 depth = 5
 
 # Requires rebuilding the scene

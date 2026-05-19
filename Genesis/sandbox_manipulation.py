@@ -313,39 +313,18 @@ class SandboxManipulation:
                 f"Safety margin of {self._safety_margin} exceeded. Box volume is x={self._box_vol[0]}, y={self._box_vol[1]}, but granular volume is x={self._granular_vol[0]}, y={self._granular_vol[1]}.")
 
         granular_touch_height = self._granular_vol[2]/2
-        if self._material_type == "rsa":
-            self.material = random_sequential_addition(
-                scene=self._scene,
-                box_pos=self._box_pos,
-                granular_vol=self._granular_vol,
-                material_properties=material_properties,
-                wall_thickness=self._wall_thickness,
-                color=granular_color
-            )                
-            granular_touch_height = self._get_rsa_particle_touch_height(material_properties)
         
-        elif self._material_type == "sand":
-            self.material = add_sand(
-                scene=self._scene,
-                box_pos=self._box_pos,
-                granular_vol=self._granular_vol,
-                material_properties=material_properties,
-                wall_thickness=self._wall_thickness,
-                sand_color=granular_color
-            )
-        elif self._material_type == "liquid":
-            self.material = add_liquid(
-                scene=self._scene,
-                box_pos=self._box_pos,
-                granular_vol=self._granular_vol,
-                material_properties=material_properties,
-                wall_thickness=self._wall_thickness,
-                color=granular_color,
-            )
-        else:
-            raise ValueError(f"Unsupported material type {self._material_type}. Supported types are 'granular', 'sand', and 'liquid'.")
-
-        self._operation_height = self._box_pos[2] + granular_touch_height + self._wall_thickness/2       
+        self.material = random_sequential_addition(
+            scene=self._scene,
+            box_pos=self._box_pos,
+            granular_vol=self._granular_vol,
+            material_properties=material_properties,
+            wall_thickness=self._wall_thickness,
+            color=granular_color
+        )                
+        
+        self._operation_height = self._box_pos[2] + self._wall_thickness/2 + self._get_rsa_particle_touch_height(material_properties)
+        
 
     def _get_rsa_particle_touch_height(self, material_properties):
         shape = material_properties.get("shape", None)
