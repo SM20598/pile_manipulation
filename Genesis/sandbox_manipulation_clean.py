@@ -58,7 +58,7 @@ class SandboxManipulation:
         self._wall_thickness = self._box_params.get('wall_thickness', 0.02)
         self._granular_vol = self._material_params.get('vol', [0.27, 0.27, 0.1])
         
-        self._settle_steps = 100
+        self._settle_steps = 50
         self._goal_threshold = 0.001
         
         self._debug = debug
@@ -97,6 +97,12 @@ class SandboxManipulation:
         self._horizontal_dof_fix[:, 0] = self._operation_height
 
         self._particle_state = torch.empty((self._n_envs, self._material_params["n_particles"], 7), device=gs.device)
+        self._zero_n_envsx3 = torch.zeros((self._n_envs, 3), device=gs.device)
+
+        # pre-allocated freeze buffer for reached-goal envs in the sweep loop
+        # layout: [x, y, z=operation_height, roll=0, pitch=0, yaw]
+        self._freeze_dofs_buf = torch.zeros((self._n_envs, 6), device=gs.device)
+        self._freeze_dofs_buf[:, 2] = self._operation_height
 
 
     def _log(self, message: str):
@@ -224,7 +230,7 @@ class SandboxManipulation:
         )      
         self._config["data_collection"]["sampled"].update({"particle_sizes": particle_sizes})
 
-    def _save_data(self, path : str | Path, flat_success_mask : torch.Tensor, max_samples : int):
+    def _save_data(self, path : str | Path, num : int, flat_success_mask : torch.Tensor, max_samples : int):
         """
         Save data efficiently using torch.save (binary format).
         
@@ -274,14 +280,15 @@ class SandboxManipulation:
             torch.cuda.synchronize()
 
         # Save as torch binary format (faster and preserves dtype/shape)
-        torch.save(valid_data, str(path / "_data.pt"))
-        torch.save(failed_data, str(path / "_failed.pt"))
+        torch.save(valid_data, str(path / f"_{num}_data.pt"))
+        torch.save(failed_data, str(path / f"_{num}_failed.pt"))
 
     def _save_config(
             self,
-            path : str | Path
+            path : str | Path,
+            num : int
         ):
-        path = path / "_config.yaml"
+        path = path / (f"_{num}_config.yaml")
         with open(path, 'w') as outfile:
             yaml.dump(self._config, outfile, default_flow_style=False)
 
@@ -455,8 +462,6 @@ class SandboxManipulation:
         inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
         lower = inner_min + half_extents
         upper = inner_max - half_extents
-        if (upper[:, :2] < lower[:, :2]).any():
-            raise ValueError("At least one particle is too large to fit inside the box.")
 
         positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
         placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
@@ -551,7 +556,7 @@ class SandboxManipulation:
         self.plate.set_pos(self.plate.get_pos())
         self.plate.control_dofs_position_velocity(
             self.plate.get_pos(),
-            torch.zeros((self._n_envs, 3), device=gs.device),
+            self._zero_n_envsx3,
             dofs_idx_local=[0, 1, 2]
         )
 
@@ -609,24 +614,21 @@ class SandboxManipulation:
         best_dist = torch.full((self._n_envs,), torch.inf, device=gs.device)
         frozen_pos = self.plate.get_pos()
         
+        n_reached = 0
         for step in range(sweep_steps):
-            if reached_goal.any():
+            if n_reached > 0:
                 reached_envs_idx = reached_goal.nonzero().squeeze(dim=1)
-                n_reached = reached_envs_idx.shape[0]
                 self.plate.set_pos(
                     frozen_pos[reached_goal],
                     envs_idx=reached_envs_idx,
                     zero_velocity=True,
                 )
+                # write only varying columns in-place; z/roll/pitch stay constant
+                self._freeze_dofs_buf[reached_envs_idx, 0] = frozen_pos[reached_envs_idx, 0]
+                self._freeze_dofs_buf[reached_envs_idx, 1] = frozen_pos[reached_envs_idx, 1]
+                self._freeze_dofs_buf[reached_envs_idx, 5] = angle[reached_envs_idx]
                 self.plate.set_dofs_position(
-                    torch.stack([
-                        frozen_pos[reached_goal, 0],
-                        frozen_pos[reached_goal, 1],
-                        torch.full((n_reached,), self._operation_height, device=gs.device),
-                        torch.zeros(n_reached, device=gs.device),
-                        torch.zeros(n_reached, device=gs.device),
-                        angle[reached_goal],
-                    ], dim=1),
+                    self._freeze_dofs_buf[reached_envs_idx],
                     dofs_idx_local=[0, 1, 2, 3, 4, 5],
                     envs_idx=reached_envs_idx,
                     zero_velocity=True,
@@ -645,7 +647,9 @@ class SandboxManipulation:
             newly_reached = (cur_dist < self._goal_threshold) & ~reached_goal
             frozen_pos = torch.where(newly_reached[:, None], cur_pos, frozen_pos)
             reached_goal |= newly_reached
-            if reached_goal.all():
+            
+            n_reached = int(reached_goal.sum().item())
+            if n_reached == self._n_envs:
                 if self._debug:
                     print(f"All environments reached target at step {step + 1}")
                 break
@@ -799,10 +803,10 @@ class SandboxManipulation:
         # Generate action samples
         action_starts, action_stops, angles = self.generate_action_samples(n_samples)
 
+        state = self.get_material_state()
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
 
-            state = self.get_material_state()
 
             p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
             p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
@@ -822,6 +826,8 @@ class SandboxManipulation:
             self._collection_buffers["p_stops"][sample_idx] = p_stop
             self._collection_buffers["sample_angles"][sample_idx] = angle
             self._collection_buffers["success_mask"][sample_idx] = reached_goal
+            
+            state = state_
             
         # Number of collected samples
         flat_success_mask = self._collection_buffers["success_mask"].reshape(max_samples)
@@ -847,10 +853,10 @@ class SandboxManipulation:
         Path.mkdir(full_path, parents=True, exist_ok=True)
 
         # look for number of runs in existing dict
-        n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/2)
-        full_path = full_path / str(n_runs)
-        self._save_config(full_path)
-        self._save_data(full_path, flat_success_mask, max_samples)
+        n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/3)
+        
+        self._save_config(full_path, n_runs)
+        self._save_data(full_path, n_runs, flat_success_mask, max_samples)
         self._log(f"Material batch finished. Run {n_runs} saved to {full_path}.")
 
     def destroy(self):

@@ -15,7 +15,7 @@ from sandbox_manipulation_clean import SandboxManipulation
 ##################################
 BASIC_SETTING = "basic"
 DEFAULT_SHAPES = ["cube"]
-DEFAULT_NUM_PARTICLES = [30, 40] #, 50]
+DEFAULT_NUM_PARTICLES = [40, 50]
 PARTICLE_SIZES = np.linspace(0.005, 0.012, 5).tolist()
 
 PARTICLE_FRICTIONS = np.linspace(0.03, 0.6, 5).tolist()
@@ -109,6 +109,8 @@ def main():
                 if args.particle_sizes != PARTICLE_SIZES
                 else build_particle_size_settings(n_p, rng)
             )
+            if n_p == 40: 
+                sizes = sizes[2:] # TEMPORARY BECAUSE FIRST TWO SIZE HAVE BEEN COLLECTED FOR 40
             for size_setting in sizes:
                 config["material"]["particle_size"] = size_setting["base"]
                 config.setdefault("data_collection", {})["sampled"] = {}
