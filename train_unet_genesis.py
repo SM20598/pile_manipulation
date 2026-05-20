@@ -32,7 +32,7 @@ def chose_loss(loss : str):
 if __name__ == "__main__":
 
    continue_training = False
-   data_folders = ["chickpeas/chickspheres_on_glass", "chickpeas/chickspheres_on_wood"]
+   data_folders = ["chickpeas/chickspheres_on_wood"]
    log_dir = "runs/unet_unconditioned"
    structure_parameters = {
     "in_channels": 2,

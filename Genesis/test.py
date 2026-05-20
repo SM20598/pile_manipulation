@@ -1,16 +1,8 @@
-import numpy as np
+import torch
+from pathlib import Path
 
-b = 12
-a = np.arange(b).reshape((2, 6))
-def get(idx : int):
-        # print(a)
-        rows, cols = a.shape
-        run = idx // cols
-        # print(run)
-        run_id = idx - sum(len(x) for x in a[:run,])
-        # print(run_id)
-        sample = a[run][run_id]
-        print(sample)
-    
-for i in range(b):
-    get(i)
+path = Path(__file__).parent
+
+data = torch.load(path / "data/test/basic/0_data.pt")
+
+print((data["states"].shape))
