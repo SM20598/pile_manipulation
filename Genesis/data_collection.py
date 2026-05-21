@@ -19,17 +19,17 @@ DEFAULT_SETTINGS = ["basic_example"]
 depth = 5
 
 # Requires rebuilding the scene
-SHAPES = ["cube", "rectangle"]
-DEFAULT_NUM_PARTICLES = [30, 40, 50]
+SHAPES = ["cube"]
+DEFAULT_NUM_PARTICLES = [10]
 CUBE_PARTICLE_SIZES = np.linspace(0.005, 0.012, depth)
 SPHERE_PARTICLE_SIZES = np.linspace(0.005, 0.012, depth)
 RECTANGLE_PARTICLE_SIZES = np.linspace(0.005, 0.012, depth)
 CYLINDER_PARTICLE_SIZES = np.linspace(0.005, 0.012, depth)
 
 # Can be changed without rebuilding the scene
-PARTICLE_FRICTIONS = np.linspace(0.03, 0.6, depth)
-PARTICLE_DENSITIES = np.linspace(750, 7000, depth)
-TABLE_FRICTION = np.linspace(0.02, 0.6, 4)
+PARTICLE_FRICTIONS = np.linspace(0.03, 0.5, depth)
+PARTICLE_DENSITIES = np.linspace(750, 5000, depth)
+TABLE_FRICTION = np.linspace(0.02, 0.5, 4)
 
 
 PARTICLE_SIZES_BY_SHAPE = {
@@ -169,7 +169,7 @@ def parse_args():
     parser.add_argument("--samples-per-env", type=int, default=1000)
     parser.add_argument("--backend", choices=["gpu", "cpu"], default="gpu")
     parser.add_argument("--speed", type=float, default=0.125)
-    parser.add_argument("--output-root", default="data/diverse")
+    parser.add_argument("--output-root", default="data/test")
     parser.add_argument("--settle-steps", type=int, default=None)
     parser.add_argument("--sweep-steps", type=int, default=None)
     parser.add_argument("--progress-interval", type=int, default=1)

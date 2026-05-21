@@ -267,14 +267,14 @@ class PileSweepData(Dataset):
         plt.title(title)
         plt.show()
 
-    def plot_grids_stacked(self, input: torch.Tensor, label: torch.Tensor, title: str = "") -> None:
+    def plot_grids_stacked(self, input_grid: torch.Tensor, label: torch.Tensor, title: str = "") -> None:
 
         from matplotlib import pyplot as plt
 
         fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
         axes[0].imshow(
-            input[0],
+            input_grid[0],
             cmap="Reds",
             alpha=0.5,
             origin="lower",
@@ -283,7 +283,7 @@ class PileSweepData(Dataset):
         )
         # Overlay second occupancy grid
         axes[1].imshow(
-            input[1],
+            input_grid[1],
             cmap="Reds",
             alpha=0.8,
             origin="lower",
@@ -408,16 +408,19 @@ class PileSweepData(Dataset):
 
 
 def main():
-    dataset = PileSweepData("test/cube")
+    dataset = PileSweepData("diverse/cube/n30/size0.005", run=0)
 
     for i in range(len(dataset)):
         inputs, label = dataset[i]
-        input, physics = inputs
+        dataset.plot_grids_stacked(inputs[0], label, title=f"particles and plate {i}")
+        inputs_next, label_next = dataset[i+1]
+        dataset.plot_grids_stacked(inputs_next[0], label_next, title=f"particles and plate {i}")
+        
+        # input, physics = inputs
         # dataset.plot_grid(input_grid[0], title=f"particles {i}")
         # dataset.plot_grid(input_grid[1], title=f"plate action {i}")
         # dataset.plot_grid(label, title=f"next state {i}")
         
-        dataset.plot_grids_stacked(input, label, title=f"particles and plate {i}")
         
 
 if __name__ == "__main__":
