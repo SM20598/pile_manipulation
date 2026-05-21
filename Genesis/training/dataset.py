@@ -213,8 +213,8 @@ class PileSweepData(Dataset):
                 ],
                 dtype=np.float32,
             )
-            rot = Rotation.from_quat(particle_state[3:])
-            yaw = float(rot.as_euler("xyz", degrees=False)[2])
+            rot = Rotation.from_quat(particle_state[3:], scalar_first = True)
+            yaw = float(rot.as_euler("xyz", degrees=False)[2]) * math.pi / 180.0
             if abs(yaw) > 1e-6:
                 rotation = np.array(
                     [
@@ -234,6 +234,7 @@ class PileSweepData(Dataset):
         else:
             angle_rad = float(angle)
 
+        angle_rad = 0
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
 
@@ -314,7 +315,7 @@ class PileSweepData(Dataset):
         plt.tight_layout()
 
         # Show window
-        plt.show()
+        # plt.show()
 
     def _clear_grids(self):
         self._input_grid.zero_()
@@ -408,16 +409,21 @@ class PileSweepData(Dataset):
 
 
 def main():
-    dataset = PileSweepData("test/cube")
+    dataset = PileSweepData("test/cube/n40/size0.005", run=1)
 
-    for i in range(len(dataset)):
+    for i in range(len(dataset)//2):
         inputs, label = dataset[i]
         input, physics = inputs
+        dataset.plot_grids_stacked(input, label, title=f"particles and plate {i}")
+        inputs2, label2 = dataset[i+1]
+        input2, physics = inputs2
+        dataset.plot_grids_stacked(input2, label2, title=f"particles and plate {i}")
         # dataset.plot_grid(input_grid[0], title=f"particles {i}")
         # dataset.plot_grid(input_grid[1], title=f"plate action {i}")
         # dataset.plot_grid(label, title=f"next state {i}")
+        from matplotlib import pyplot as plt
+        plt.show()
         
-        dataset.plot_grids_stacked(input, label, title=f"particles and plate {i}")
         
 
 if __name__ == "__main__":
