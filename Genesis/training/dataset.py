@@ -43,25 +43,15 @@ class PileSweepData(Dataset):
             if not full_path.exists():
                 raise FileNotFoundError(f"Data folder not found: {full_path}")
 
-            if run is not None:
-                run_names = [str(run)]
-            else:
-                run_names = sorted(
-                    {f.split("_data.")[0] for f in os.listdir(full_path) if f.endswith("_data.pt")}
+            run_files = self._collect_run_paths(full_path, run)
+            if not run_files:
+                raise FileNotFoundError(
+                    f"No data runs found in path: {full_path}"
                 )
 
-            for run_name in run_names:
-
-                data_file = full_path / f"{run_name}_data.pt"
-                if not data_file.exists():
-                    raise FileNotFoundError(f"Data file not found: {data_file}")
-
-                config_file = full_path / f"{run_name}_config.yaml"
-                if not config_file.exists():
-                    raise FileNotFoundError(f"Config file not found: {config_file}")
-
+            for data_file, config_file in run_files:
                 self.runs.append(torch.load(data_file, map_location="cpu"))
-                self.configs.append(yaml.safe_load(config_file.read_text()))
+                self.configs.append(yaml.full_load(config_file.read_text()))
                 self._run_lengths.append(self._count_samples_in_run(self.runs[-1]))
         
         if not self.configs:
@@ -79,6 +69,9 @@ class PileSweepData(Dataset):
 
         self._create_grids(self.configs[0])
         
+    def __len__(self):
+        return len(self._run_lookup)
+
     def _create_grids(
             self, 
             config
@@ -92,17 +85,15 @@ class PileSweepData(Dataset):
         # Box grid, dimension, and center
         x_dim, y_dim, _ = config["box"]["vol"]
         x_pxl, y_pxl = int(x_dim * TO_PXL), int(y_dim * TO_PXL)
+        self.ctr_in_PXL = (round(x_pxl / 2), round(y_pxl / 2))
 
-        self._grid = torch.zeros((2, x_pxl, y_pxl), dtype=torch.float32)
-        self._grid_ = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
-
-        self._box_dim = (x_dim, y_dim)
-        self.ctr = (round(x_pxl / 2), round(y_pxl / 2))
+        self._input_grid = torch.zeros((2, x_pxl, y_pxl), dtype=torch.float32)
+        self._output_grid = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
 
         # Plate grid and dimension
         x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
         self._precompute_plate_grid(x_dim_plt, y_dim_plt)
-        self._plt_dim = (x_dim_plt, y_dim_plt)
+        self._plt_dim_in_m = (x_dim_plt, y_dim_plt)
 
     def _precompute_plate_grid(
             self,
@@ -128,6 +119,42 @@ class PileSweepData(Dataset):
     def _count_samples_in_run(self, run):
         return run["states"].shape[0]
 
+    def _collect_run_paths(self, root: Path, run: int | None):
+        run_paths = []
+        if run is not None:
+            run_name = str(run)
+            expected_data = root / f"{run_name}_data.pt"
+            expected_config = root / f"{run_name}_config.yaml"
+            _expected_data = root / f"_{run_name}_data.pt"
+            _expected_config = root / f"_{run_name}_config.yaml"
+            if expected_data.exists() and expected_config.exists():
+                return [(expected_data, expected_config)]
+            elif _expected_data.exists() and _expected_config.exists():
+                return [(_expected_data, _expected_config)]
+
+            for subdir in sorted(root.iterdir()):
+                if not subdir.is_dir():
+                    continue
+                data_file = subdir / f"{run_name}_data.pt"
+                config_file = subdir / f"{run_name}_config.yaml"
+                _data_file = subdir / f"_{run_name}_data.pt"
+                _config_file = subdir / f"_{run_name}_config.yaml"
+                if data_file.exists() and config_file.exists():
+                    return [(data_file, config_file)]
+                elif _data_file.exists() and _config_file.exists():
+                    return [(_data_file, _config_file)]
+
+            return []
+
+        for data_file in sorted(root.rglob("*_data.pt")):
+            config_file = data_file.with_name(
+                f"{data_file.stem.replace('_data', '')}_config.yaml"
+            )
+            if config_file.exists():
+                run_paths.append((data_file, config_file))
+
+        return run_paths
+
     def _get_plate_dims(self, config):
         return config["plate"]["size"]
 
@@ -139,8 +166,10 @@ class PileSweepData(Dataset):
             @param run: data run.
             @param index: index of sample in run
         """
-        particles = run["states"][index] * TO_PXL
-        particles_ = run["states_"][index] * TO_PXL
+        particles = run["states"][index].clone()
+        particles[:, :3] = particles[:, :3] * TO_PXL
+        particles_ = run["states_"][index].clone()
+        particles_[:, :3] = particles_[:, :3] * TO_PXL
         plate_pos = run["p_starts"][index] * TO_PXL
         plate_pos_ = run["p_stops"][index] * TO_PXL
         angle = run["angles"][index]
@@ -149,29 +178,29 @@ class PileSweepData(Dataset):
 
     def _draw_particle_grid(self, particle_states, grid, config):
 
-        num_particles = config["material"]["num_particles"]
+        num_particles = config["material"]["n_particles"]
         shape = config["material"]["shape"]
-        particle_sizes = config["data_collection"]["sampled"]["particle_size"]
+        particle_sizes = config["data_collection"]["sampled"]["particle_sizes"]
         grid_np = grid.numpy()
 
         for idx in range(num_particles):
             particle_state = particle_states[idx]
             dimensions = particle_sizes[idx]
-            center_x = float(particle_state[0]) + self.ctr[0]
-            center_y = float(particle_state[1]) + self.ctr[1]
-            
+            center_x = float(particle_state[0]) + self.ctr_in_PXL[0]
+            center_y = float(particle_state[1]) + self.ctr_in_PXL[1]
+
             if shape == "sphere":
-                radius, _, _ = dimensions * TO_PXL / 2
+                diameter, _, _ = dimensions
                 cv2.circle(
                     grid_np,
                     (int(round(center_x)), int(round(center_y))),
-                    int(round(radius)),
+                    int(round(diameter * TO_PXL * 0.5)),
                     color=1,
                     thickness=-1,
                 )
                 continue
 
-            width, height = float(dimensions[0]), float(dimensions[1])
+            width, height = float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL
             half_w = width * 0.5
             half_h = height * 0.5
 
@@ -184,8 +213,7 @@ class PileSweepData(Dataset):
                 ],
                 dtype=np.float32,
             )
-
-            rot = Rotation.from_quat(particle_state[2:])
+            rot = Rotation.from_quat(particle_state[3:])
             yaw = float(rot.as_euler("xyz", degrees=False)[2])
             if abs(yaw) > 1e-6:
                 rotation = np.array(
@@ -230,17 +258,67 @@ class PileSweepData(Dataset):
         )
         return rotated_grid.squeeze(0).squeeze(0)
 
-    def plot_grid(self, grid: torch.Tensor, title: str = "") -> None:
+    def plot_grid(self, grid: torch.Tensor, title: str = "", ontop: bool = False) -> None:
         """Visualize the grid as an image"""
+        
         from matplotlib import pyplot as plt
 
-        plt.imshow(grid, interpolation="nearest")
+        plt.imshow(grid, interpolation="nearest", origin="lower")
         plt.title(title)
         plt.show()
 
+    def plot_grids_stacked(self, input: torch.Tensor, label: torch.Tensor, title: str = "") -> None:
+
+        from matplotlib import pyplot as plt
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+        axes[0].imshow(
+            input[0],
+            cmap="Reds",
+            alpha=0.5,
+            origin="lower",
+            vmin=0,
+            vmax=1
+        )
+        # Overlay second occupancy grid
+        axes[1].imshow(
+            input[1],
+            cmap="Reds",
+            alpha=0.8,
+            origin="lower",
+            vmin=0,
+            vmax=1
+        )
+        # Plot first occupancy grid
+        axes[1].imshow(
+            label,
+            cmap="Blues",
+            alpha=0.5,
+            origin="lower",
+            vmin=0,
+            vmax=1
+        )
+
+        # # from  matplotlib import pyplot as plt
+
+        # # Plot first array
+        # im1 = axes[0].imshow(input_grid[0], cmap='viridis')
+        # axes[0].set_title("Array 1")
+
+        # # Plot second array
+        # im2 = axes[1].imshow(label, cmap='plasma')
+        # axes[1].set_title("Array 2")
+
+        # Adjust layout
+        plt.tight_layout()
+
+        # Show window
+        plt.show()
+
     def _clear_grids(self):
-        self._grid.zero_()
-        self._grid_.zero_()
+        self._input_grid.zero_()
+        self._output_grid.zero_()
 
     def _color_grid(
             self,
@@ -298,47 +376,49 @@ class PileSweepData(Dataset):
         # extract sample at given index
         particles, particles_, plate_pos, plate_pos_, angle = self._extract_sample_in_pxl(run, sample_index)
 
-        self._draw_particle_grid(particles, self._grid[0], config)
-        self._draw_particle_grid(particles_, self._grid_, config)
+        self._draw_particle_grid(particles, self._input_grid[0], config)
+        self._draw_particle_grid(particles_, self._output_grid, config)
 
 
         # if dataset includes plates of different sizes
         x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
-        if (x_dim_plt != self._plt_dim[0] or y_dim_plt != self._plt_dim[1]):
+        if (x_dim_plt != self._plt_dim_in_m[0] or y_dim_plt != self._plt_dim_in_m[1]):
             self._precompute_plate_grid(x_dim_plt, y_dim_plt)
             self._plate_cache.clear()
 
         rotated_plate = self._rotate_plate_torch(self._base_plate_grid, angle)
 
         self._color_grid(
-            grid=self._grid[1],
-            x=self.ctr[0] + float(plate_pos[0]),
-            y=self.ctr[1] + float(plate_pos[1]),
+            grid=self._input_grid[1],
+            x=self.ctr_in_PXL[0] + float(plate_pos[0]),
+            y=self.ctr_in_PXL[1] + float(plate_pos[1]),
             size=self._base_plate_grid.shape,
             drawing=(rotated_plate > 0.5).float() * 0.5,
         )
         self._color_grid(
-            grid=self._grid[1],
-            x=self.ctr[0] + float(plate_pos_[0]),
-            y=self.ctr[1] + float(plate_pos_[1]),
+            grid=self._input_grid[1],
+            x=self.ctr_in_PXL[0] + float(plate_pos_[0]),
+            y=self.ctr_in_PXL[1] + float(plate_pos_[1]),
             size=self._base_plate_grid.shape,
             drawing=(rotated_plate > 0.5).float(),
         )
 
         self._det_physics(config)
-        return (self._grid, self._physics), self._grid_
+        return (self._input_grid, self._physics), self._output_grid
 
 
 def main():
-    dataset = PileSweepData("data/cubes/chickspheres_on_glass/")
+    dataset = PileSweepData("test/cube")
 
-    for i in range(min(len(dataset), 3)):
+    for i in range(len(dataset)):
         inputs, label = dataset[i]
-        particle_grid, action_grid = inputs
-        dataset.plot_grid(particle_grid, title=f"particles {i}")
-        dataset.plot_grid(action_grid, title=f"plate action {i}")
-        dataset.plot_grid(label, title=f"next state {i}")
-
+        input, physics = inputs
+        # dataset.plot_grid(input_grid[0], title=f"particles {i}")
+        # dataset.plot_grid(input_grid[1], title=f"plate action {i}")
+        # dataset.plot_grid(label, title=f"next state {i}")
+        
+        dataset.plot_grids_stacked(input, label, title=f"particles and plate {i}")
+        
 
 if __name__ == "__main__":
     main()

@@ -74,10 +74,9 @@ def parse_args():
     parser.add_argument("--particle-sizes", nargs="+", type=float, default=PARTICLE_SIZES)
     parser.add_argument("--n-envs", type=int, default=10)
     parser.add_argument("--samples-per-env", type=int, default=5)
-    parser.add_argument("--output-root", default="data/diverse")
-    parser.add_argument("--show-viewer", action="store_true")
+    parser.add_argument("--output-root", default="data/test")
+    parser.add_argument("--debug", action="store_true")
     parser.add_argument("--viewer-type", choices=["observer", "bird", "leveled"], default=None)
-    parser.add_argument("--update-visualizer", action="store_true")
     return parser.parse_args()
 
 
@@ -124,7 +123,7 @@ def main():
                 sm = SandboxManipulation(
                     config=config,
                     n_envs=args.n_envs,
-                    debug=args.show_viewer,
+                    debug=args.debug,
                     viewer_type=args.viewer_type,
                 )
 

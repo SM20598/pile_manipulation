@@ -3,9 +3,7 @@ import genesis.utils.geom as gu
 import numpy as np
 import yaml
 from utilities.materials import *
-import quaternion as qu
 from pathlib import Path
-import pickle
 import os
 import math
 import torch
@@ -97,6 +95,8 @@ class SandboxManipulation:
         self._horizontal_dof_fix[:, 0] = self._operation_height
 
         self._particle_state = torch.empty((self._n_envs, self._material_params["n_particles"], 7), device=gs.device)
+        self._particle_state_ = torch.empty((self._n_envs, self._material_params["n_particles"], 7), device=gs.device)
+        
         self._zero_n_envsx3 = torch.zeros((self._n_envs, 3), device=gs.device)
 
         # pre-allocated freeze buffer for reached-goal envs in the sweep loop
@@ -543,7 +543,7 @@ class SandboxManipulation:
     def _get_particle_quats(self):
         return self._scene.rigid_solver.get_links_quat(links_idx=self._particle_links_idx)
 
-    def get_material_state(self):
+    def get_material_state(self, after_sweep=False):
         """
         Returns particle state (positions and sizes) for all environments.
         Optimized for GPU processing.
@@ -565,8 +565,13 @@ class SandboxManipulation:
             self.plate.set_dofs_position(frozen_plate_dofs)
             self._step_scene()
 
-        self._particle_state[:, :, 0:3] = self._get_particle_positions()
-        self._particle_state[:, :, 3:] = self._get_particle_quats()
+        if after_sweep:
+            self._particle_state_[:, :, 0:3] = self._get_particle_positions()
+            self._particle_state_[:, :, 3:] = self._get_particle_quats()
+            return self._particle_state_
+        else:
+            self._particle_state[:, :, 0:3] = self._get_particle_positions()
+            self._particle_state[:, :, 3:] = self._get_particle_quats()
         return self._particle_state
     
     def plate_velocity_translation(
@@ -796,11 +801,11 @@ class SandboxManipulation:
             self._collection_buffers['states'].shape[1] != self._n_envs):
             self._allocate_collection_buffers(n_samples)
         
-        # Clear buffers (much faster than allocating new ones)
+        # Clear data buffer
         for buf in self._collection_buffers.values():
             buf.zero_()
         
-        # Generate action samples
+        # Generate random action samples per env
         action_starts, action_stops, angles = self.generate_action_samples(n_samples)
 
         state = self.get_material_state()
@@ -818,7 +823,10 @@ class SandboxManipulation:
                 angle,
             )
             
-            state_ = self.get_material_state()
+            state_ = self.get_material_state(after_sweep=True)
+
+            if torch.equal(state, state_):
+                print("State did not change")
 
             self._collection_buffers["states"][sample_idx] = state
             self._collection_buffers["states_"][sample_idx] = state_
