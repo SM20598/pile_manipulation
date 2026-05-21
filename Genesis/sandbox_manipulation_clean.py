@@ -56,7 +56,7 @@ class SandboxManipulation:
         self._wall_thickness = self._box_params.get('wall_thickness', 0.02)
         self._granular_vol = self._material_params.get('vol', [0.27, 0.27, 0.1])
         
-        self._settle_steps = 50
+        self._settle_steps = 100
         self._goal_threshold = 0.001
         
         self._debug = debug
@@ -553,7 +553,7 @@ class SandboxManipulation:
     def _get_particle_quats(self):
         return self._scene.rigid_solver.get_links_quat(links_idx=self._particle_links_idx)
 
-    def get_material_state(self, after_sweep=False):
+    def update_material_state(self, store_other=False):
         """
         Returns particle state (positions and sizes) for all environments.
         Optimized for GPU processing.
@@ -575,14 +575,8 @@ class SandboxManipulation:
             self.plate.set_dofs_position(frozen_plate_dofs)
             self._step_scene()
 
-        if after_sweep:
-            self._particle_state_[:, :, 0:3] = self._get_particle_positions()
-            self._particle_state_[:, :, 3:] = self._get_particle_quats()
-            return self._particle_state_
-        else:
-            self._particle_state[:, :, 0:3] = self._get_particle_positions()
-            self._particle_state[:, :, 3:] = self._get_particle_quats()
-        return self._particle_state
+        self._particle_state[:, :, 0:3] = self._get_particle_positions()
+        self._particle_state[:, :, 3:] = self._get_particle_quats()
     
     def plate_velocity_translation(
             self,
@@ -818,10 +812,12 @@ class SandboxManipulation:
         # Generate random action samples per env
         action_starts, action_stops, angles = self.generate_action_samples(n_samples)
 
-        state = self.get_material_state()
+        self.update_material_state()
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
 
+
+            self._collection_buffers["states"][sample_idx].copy_(self._particle_state)
 
             p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
             p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
@@ -833,19 +829,15 @@ class SandboxManipulation:
                 angle,
             )
             
-            state_ = self.get_material_state(after_sweep=True)
+            self.update_material_state()
 
-            if torch.equal(state, state_):
-                print("State did not change")
-
-            self._collection_buffers["states"][sample_idx] = state
-            self._collection_buffers["states_"][sample_idx] = state_
+            self._collection_buffers["states_"][sample_idx].copy_(self._particle_state)   
             self._collection_buffers["p_starts"][sample_idx] = p_start
             self._collection_buffers["p_stops"][sample_idx] = p_stop
             self._collection_buffers["sample_angles"][sample_idx] = angle
             self._collection_buffers["success_mask"][sample_idx] = reached_goal
-            
-            state = state_
+            if self._debug and torch.equal(self._collection_buffers["states"][sample_idx], self._collection_buffers["states_"][sample_idx]):
+                print("State did not change")
             
         # Number of collected samples
         flat_success_mask = self._collection_buffers["success_mask"].reshape(max_samples)
