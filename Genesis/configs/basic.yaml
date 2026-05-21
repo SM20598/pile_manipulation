@@ -1,7 +1,7 @@
 # SIMULATOR SETTINGS
 simulation:
   dt: 4e-3
-  substeps : 2
+  substeps : 5
   backend : gpu
   precision : '32'
   performance_mode : True

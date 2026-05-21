@@ -15,12 +15,12 @@ from sandbox_manipulation_clean import SandboxManipulation
 ##################################
 BASIC_SETTING = "basic"
 DEFAULT_SHAPES = ["cube"]
-DEFAULT_NUM_PARTICLES = [40, 50]
+DEFAULT_NUM_PARTICLES = [10, 20]
 PARTICLE_SIZES = np.linspace(0.005, 0.012, 5).tolist()
 
-PARTICLE_FRICTIONS = np.linspace(0.03, 0.6, 5).tolist()
-PARTICLE_DENSITIES = np.linspace(750, 7000, 5).tolist()
-BOX_FRICTION = np.linspace(0.02, 0.6, 4).tolist()
+PARTICLE_FRICTIONS = np.linspace(0.05, 0.5, 5).tolist()
+PARTICLE_DENSITIES = np.linspace(750, 5000, 5).tolist()
+BOX_FRICTION = np.linspace(0.05, 0.5, 4).tolist()
 PER_PARTICLE_VALUE_PROBABILITY = 0.5
 
 
@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument("--particle-sizes", nargs="+", type=float, default=PARTICLE_SIZES)
     parser.add_argument("--n-envs", type=int, default=10)
     parser.add_argument("--samples-per-env", type=int, default=5)
-    parser.add_argument("--output-root", default="data/test")
+    parser.add_argument("--output-root", default="data/corl")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--viewer-type", choices=["observer", "bird", "leveled"], default=None)
     return parser.parse_args()

@@ -456,18 +456,28 @@ class SandboxManipulation:
         sizes = torch.as_tensor(size_values, dtype=torch.float32, device=gs.device)
         half_extents = sizes * 0.5
 
+        # For cubes, a random yaw rotation up to 45° increases the xy footprint by up to sqrt(2).
+        # Use conservative collision extents so placed cubes don't overlap after rotation is applied.
+        is_cube = torch.tensor(
+            [hasattr(p.morph, "size") for p in self.material],
+            dtype=torch.float32, device=gs.device,
+        )
+        xy_scale = 1.0 + (math.sqrt(2) - 1.0) * is_cube  # sqrt(2) for cubes, 1.0 for others
+        collision_half_extents = half_extents.clone()
+        collision_half_extents[:, :2] = half_extents[:, :2] * xy_scale.unsqueeze(1)
+
         width, depth, height = self._box_params["vol"]
         wall = float(self._wall_thickness)
         inner_min = torch.tensor([-width / 2, -depth / 2, wall / 2], device=gs.device)
         inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
-        lower = inner_min + half_extents
-        upper = inner_max - half_extents
+        lower = inner_min + collision_half_extents
+        upper = inner_max - collision_half_extents
 
         positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
         placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
         order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
         candidate_batch = max(1024, min(4096, 64 * n_particles))
-        min_gap = 1e-4
+        min_gap = 1e-3
 
         for particle_idx_tensor in order:
             particle_idx = int(particle_idx_tensor.item())
@@ -488,7 +498,7 @@ class SandboxManipulation:
                     valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
                 else:
                     delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
-                    min_sep = half_extents[particle_idx, :2] + half_extents[placed_idx, :2] + min_gap
+                    min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
                     valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
                 has_valid = valid.any(dim=1)
                 accepted = active_idx[has_valid]
