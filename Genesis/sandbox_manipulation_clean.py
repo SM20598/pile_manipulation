@@ -446,85 +446,97 @@ class SandboxManipulation:
         if n_particles == 0:
             return
 
-        size_values = self._sampled_params.get("particle_sizes", None)
-        if size_values is None:
-            size_values = [
-                particle.morph.size if hasattr(particle.morph, "size")
-                else (particle.morph.radius * 2,) * 3
-                for particle in self.material
-            ]
-        sizes = torch.as_tensor(size_values, dtype=torch.float32, device=gs.device)
-        half_extents = sizes * 0.5
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                size_values = self._sampled_params.get("particle_sizes", None)
+                if size_values is None:
+                    size_values = [
+                        particle.morph.size if hasattr(particle.morph, "size")
+                        else (particle.morph.radius * 2,) * 3
+                        for particle in self.material
+                    ]
+                sizes = torch.as_tensor(size_values, dtype=torch.float32, device=gs.device)
+                half_extents = sizes * 0.5
 
-        # For cubes, a random yaw rotation up to 45° increases the xy footprint by up to sqrt(2).
-        # Use conservative collision extents so placed cubes don't overlap after rotation is applied.
-        is_cube = torch.tensor(
-            [hasattr(p.morph, "size") for p in self.material],
-            dtype=torch.float32, device=gs.device,
-        )
-        xy_scale = 1.0 + (math.sqrt(2) - 1.0) * is_cube  # sqrt(2) for cubes, 1.0 for others
-        collision_half_extents = half_extents.clone()
-        collision_half_extents[:, :2] = half_extents[:, :2] * xy_scale.unsqueeze(1)
-
-        width, depth, height = self._box_params["vol"]
-        wall = float(self._wall_thickness)
-        inner_min = torch.tensor([-width / 2, -depth / 2, wall / 2], device=gs.device)
-        inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
-        lower = inner_min + collision_half_extents
-        upper = inner_max - collision_half_extents
-
-        positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
-        placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
-        order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
-        candidate_batch = max(1024, min(4096, 64 * n_particles))
-        min_gap = 1e-3
-
-        for particle_idx_tensor in order:
-            particle_idx = int(particle_idx_tensor.item())
-            active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
-            span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
-            z_pos = inner_min[2] + half_extents[particle_idx, 2] + min_gap
-            for _ in range(128):
-                active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
-                if active_idx.numel() == 0:
-                    break
-                candidate_xy = (
-                    torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
-                    * span_xy
-                    + lower[particle_idx, :2]
+                # For cubes, a random yaw rotation up to 45° increases the xy footprint by up to sqrt(2).
+                # Use conservative collision extents so placed cubes don't overlap after rotation is applied.
+                is_cube = torch.tensor(
+                    [hasattr(p.morph, "size") for p in self.material],
+                    dtype=torch.float32, device=gs.device,
                 )
-                placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
-                if placed_idx.numel() == 0:
-                    valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
+                xy_scale = 1.0 + (math.sqrt(2) - 1.0) * is_cube  # sqrt(2) for cubes, 1.0 for others
+                collision_half_extents = half_extents.clone()
+                collision_half_extents[:, :2] = half_extents[:, :2] * xy_scale.unsqueeze(1)
+
+                width, depth, height = self._box_params["vol"]
+                wall = float(self._wall_thickness)
+                inner_min = torch.tensor([-width / 2, -depth / 2, wall / 2], device=gs.device)
+                inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
+                lower = inner_min + collision_half_extents
+                upper = inner_max - collision_half_extents
+
+                positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
+                placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
+                order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
+                candidate_batch = max(1024, min(4096, 64 * n_particles))
+                min_gap = 1e-3
+
+                for particle_idx_tensor in order:
+                    particle_idx = int(particle_idx_tensor.item())
+                    active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
+                    span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
+                    z_pos = inner_min[2] + half_extents[particle_idx, 2] + min_gap
+                    for _ in range(128):
+                        active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+                        if active_idx.numel() == 0:
+                            break
+                        candidate_xy = (
+                            torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
+                            * span_xy
+                            + lower[particle_idx, :2]
+                        )
+                        placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
+                        if placed_idx.numel() == 0:
+                            valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
+                        else:
+                            delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
+                            min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
+                            valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
+                        has_valid = valid.any(dim=1)
+                        accepted = active_idx[has_valid]
+                        first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
+                        positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
+                        positions[accepted, particle_idx, 2] = z_pos
+                        active[accepted] = False
+                    if active.any():
+                        raise RuntimeError("placement_failed")
+                    placed[particle_idx] = True
+
+                envs_idx = torch.arange(self._n_envs, device=gs.device)
+                for particle_idx, particle in enumerate(self.material):
+                    particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
+                    particle.set_quat(self._random_particle_quats(particle, self._n_envs), envs_idx=envs_idx)
+                if self._particle_dofs_idx.numel() > 0:
+                    self._scene.rigid_solver.set_dofs_velocity(
+                        torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
+                        dofs_idx=self._particle_dofs_idx,
+                        skip_forward=True,
+                    )
+                # Success, break out of retry loop
+                break
+            except RuntimeError as e:
+                if str(e) == "placement_failed":
+                    print(f"Placement of particles failed due to overlap, retrying {attempt+1}/{max_retries}...")
+                    if attempt == max_retries - 1:
+                        raise RuntimeError(
+                            f"Could not randomly shuffle particles without overlap after {max_retries} attempts. "
+                            "Try a smaller particle size or fewer particles."
+                        )
+                    # else, try again
+                    continue
                 else:
-                    delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
-                    min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
-                    valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
-                has_valid = valid.any(dim=1)
-                accepted = active_idx[has_valid]
-                first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
-                positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
-                positions[accepted, particle_idx, 2] = z_pos
-                active[accepted] = False
-            if active.any():
-                raise RuntimeError(
-                    "Could not randomly shuffle particles without overlap. "
-                    "Try a smaller particle size or fewer particles."
-                )
-            placed[particle_idx] = True
-
-        envs_idx = torch.arange(self._n_envs, device=gs.device)
-        for particle_idx, particle in enumerate(self.material):
-            particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
-            particle.set_quat(self._random_particle_quats(particle, self._n_envs), envs_idx=envs_idx)
-        if self._particle_dofs_idx.numel() > 0:
-            self._scene.rigid_solver.set_dofs_velocity(
-                torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
-                dofs_idx=self._particle_dofs_idx,
-                skip_forward=True,
-            )
-
-    shuffle_position = shuffle_particles
+                    raise
 
     def _random_particle_quats(self, particle, n_envs: int) -> torch.Tensor:
         if not hasattr(particle.morph, "size") and not hasattr(particle.morph, "height"):
