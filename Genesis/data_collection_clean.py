@@ -14,8 +14,8 @@ from sandbox_manipulation_clean import SandboxManipulation
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
 BASIC_SETTING = "basic"
-DEFAULT_SHAPES = ["cube"]
-DEFAULT_NUM_PARTICLES = [10, 20, 30, 40, 50]
+DEFAULT_SHAPES = ["sphere"]
+DEFAULT_NUM_PARTICLES = [10]
 PARTICLE_SIZES = np.linspace(0.005, 0.012, 5).tolist()
 
 PARTICLE_FRICTIONS = np.linspace(0.05, 0.5, 5).tolist()
@@ -133,14 +133,18 @@ def main():
                     print(f"\n--- material batch {property_idx + 1}/{len(env_settings)}", flush=True)
                     
                     sm.set_material_properties(property_setting)
-                    sm.shuffle_particles()
-                    sm.collect_data_samples(
-                        n_samples=args.samples_per_env,
-                        path=(
-                            f"{args.output_root}/"
-                            f"{shape}/n{n_p}/size{size_setting['base']}"
-                        ),
-                    )
+                    try:
+                        sm.shuffle_particles()
+                        sm.collect_data_samples(
+                            n_samples=args.samples_per_env,
+                            path=(
+                                f"{args.output_root}/"
+                                f"{shape}/n{n_p}/size{size_setting['base']}"
+                            ),
+                        )
+                    except RuntimeError as e:
+                        print(f"Maximum attempts reached, stopped retrying to shuffle, skipping: {e}")
+                    
 
                 sm.destroy()
 
