@@ -182,11 +182,29 @@ class PileSweepData(Dataset):
         particle_sizes = config["data_collection"]["sampled"]["particle_sizes"]
         grid_np = grid.numpy()
 
+        def draw_box_points(grid, center, box_dim, angle, density=1):
+            rotated_rect = (
+                (int(center[0]), int(center[1])),
+                (int(box_dim[0]), int(box_dim[1])), 
+                int(angle * 180 / math.pi)
+            )
+            
+            box = cv2.boxPoints(rotated_rect)
+            box = np.int32(box)
+            cv2.fillPoly(grid, [box], density)
+        
+        def quaternion_to_yaw(q):
+            w, x, y, z = q
+            siny_cosp = 2 * (w * z + x * y)
+            cos_y_cosp = 1 - 2 * (y * y + z * z)
+            return math.atan2(siny_cosp, cos_y_cosp)
+        
+
         for idx in range(num_particles):
             particle_state = particle_states[idx]
             dimensions = particle_sizes[idx]
-            center_x = float(particle_state[0]) #+ self.ctr_in_PXL[0]
-            center_y = float(particle_state[1]) #+ self.ctr_in_PXL[1]
+            center_x = float(particle_state[0])
+            center_y = float(particle_state[1])
 
             if shape == "sphere":
                 diameter, _, _ = dimensions
@@ -198,26 +216,12 @@ class PileSweepData(Dataset):
                     thickness=-1,
                 )
                 continue
-
-            def draw_box_points(grid, center, box_dim, angle, density=1):
-                rotated_rect = (
-                    (int(center[0]), int(center[1])),
-                    (int(box_dim[0]), int(box_dim[1])), 
-                    int(angle * 180 / math.pi)
-                )
-                
-                box = cv2.boxPoints(rotated_rect)
-                box = np.int32(box)
-                cv2.fillPoly(grid, [box], density)
-
-            rot = Rotation.from_quat(particle_state[3:], scalar_first = True)
-            yaw = float(rot.as_euler("xyz", degrees=False)[2]) * math.pi / 180.0
             
             draw_box_points(
                 grid_np,
                 (center_x, center_y),
                 (float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL),
-                yaw,
+                quaternion_to_yaw(particle_state[3:]),
                 1
             )
 
@@ -401,21 +405,11 @@ class PileSweepData(Dataset):
             vmax=1
         )
 
-        # # from  matplotlib import pyplot as plt
-
-        # # Plot first array
-        # im1 = axes[0].imshow(input_grid[0], cmap='viridis')
-        # axes[0].set_title("Array 1")
-
-        # # Plot second array
-        # im2 = axes[1].imshow(label, cmap='plasma')
-        # axes[1].set_title("Array 2")
-
         # Adjust layout
         plt.tight_layout()
 
         # Show window
-        # plt.show()
+        plt.show()
 
     def _clear_grids(self):
         self._input_grid.zero_()
