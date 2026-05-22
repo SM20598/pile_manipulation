@@ -15,7 +15,7 @@ from sandbox_manipulation_clean import SandboxManipulation
 ##################################
 BASIC_SETTING = "basic"
 DEFAULT_SHAPES = ["sphere"]
-DEFAULT_NUM_PARTICLES = [10]
+DEFAULT_NUM_PARTICLES = [40, 50]
 PARTICLE_SIZES = np.linspace(0.005, 0.012, 5).tolist()
 
 PARTICLE_FRICTIONS = np.linspace(0.05, 0.5, 5).tolist()
