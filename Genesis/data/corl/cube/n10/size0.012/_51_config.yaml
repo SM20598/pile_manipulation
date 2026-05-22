@@ -1,0 +1,101 @@
+box:
+  friction: 0.5
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.5
+    density:
+    - 2907.425048828125
+    - 2586.537353515625
+    - 2613.64208984375
+    - 3034.986328125
+    - 2834.56103515625
+    - 3394.612548828125
+    - 2978.76171875
+    - 3116.397705078125
+    - 3292.459228515625
+    - 2928.060791015625
+    particle_sizes:
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+  samples_per_env: 2
+material:
+  density: 2875.0
+  friction: 0.275
+  n_particles: 10
+  particle_size: 0.012
+  shape: cube
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 11
+  samples_per_env: 2
+  total_samples_collected: 9

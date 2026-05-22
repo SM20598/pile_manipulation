@@ -1,0 +1,151 @@
+box:
+  friction: 0.5
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.5
+    friction:
+    - 0.4032110571861267
+    - 0.4486848711967468
+    - 0.45663371682167053
+    - 0.49070844054222107
+    - 0.5114035606384277
+    - 0.44994664192199707
+    - 0.4298907518386841
+    - 0.517073392868042
+    - 0.4789235591888428
+    - 0.4316551089286804
+    - 0.5603917837142944
+    - 0.5172666907310486
+    - 0.5178220272064209
+    - 0.5531900525093079
+    - 0.5502896904945374
+    - 0.5905342698097229
+    - 0.549930214881897
+    - 0.591453492641449
+    - 0.44010159373283386
+    - 0.521198034286499
+    particle_sizes:
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+  samples_per_env: 2
+material:
+  density: 2875.0
+  friction: 0.5
+  n_particles: 20
+  particle_size: 0.0085
+  shape: cube
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 2
+  samples_per_env: 2
+  total_samples_collected: 18

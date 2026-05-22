@@ -1,0 +1,112 @@
+box:
+  friction: 0.2
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.2
+    density:
+    - 2966.30322265625
+    - 2989.072998046875
+    - 2678.60498046875
+    - 2940.673095703125
+    - 2903.2890625
+    - 2777.835205078125
+    - 2701.90234375
+    - 2351.8623046875
+    - 2329.939453125
+    - 3096.417724609375
+    friction:
+    - 0.4558160603046417
+    - 0.45424726605415344
+    - 0.41095924377441406
+    - 0.5343141555786133
+    - 0.4388425946235657
+    - 0.45708128809928894
+    - 0.5559367537498474
+    - 0.5675013661384583
+    - 0.4688955545425415
+    - 0.4994179308414459
+    particle_sizes:
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+  samples_per_env: 2
+material:
+  density: 2875.0
+  friction: 0.5
+  n_particles: 10
+  particle_size: 0.012
+  shape: cube
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 8
+  samples_per_env: 2
+  total_samples_collected: 12

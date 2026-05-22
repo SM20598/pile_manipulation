@@ -1,0 +1,112 @@
+box:
+  friction: 0.2
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.2
+    density:
+    - 768.775146484375
+    - 836.8104248046875
+    - 689.79736328125
+    - 876.0242309570312
+    - 648.243408203125
+    - 757.2777099609375
+    - 686.724365234375
+    - 704.9200439453125
+    - 871.2503662109375
+    - 725.3184204101562
+    friction:
+    - 0.5107722282409668
+    - 0.5913525819778442
+    - 0.5235453844070435
+    - 0.4065660536289215
+    - 0.5165783762931824
+    - 0.42591723799705505
+    - 0.47977325320243835
+    - 0.5892087817192078
+    - 0.5519011616706848
+    - 0.5059090852737427
+    particle_sizes:
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+    - !!python/tuple
+      - 0.01025
+      - 0.01025
+      - 0.01025
+  samples_per_env: 2
+material:
+  density: 750.0
+  friction: 0.5
+  n_particles: 10
+  particle_size: 0.01025
+  shape: cube
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 1
+  samples_per_env: 2
+  total_samples_collected: 19

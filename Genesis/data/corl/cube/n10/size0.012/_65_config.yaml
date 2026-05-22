@@ -1,0 +1,112 @@
+box:
+  friction: 0.2
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.2
+    density:
+    - 1594.341796875
+    - 1722.77978515625
+    - 1542.542724609375
+    - 1845.991943359375
+    - 1470.7752685546875
+    - 1846.58251953125
+    - 1683.65625
+    - 2058.252197265625
+    - 2030.913818359375
+    - 1839.657958984375
+    friction:
+    - 0.3195853531360626
+    - 0.3612145483493805
+    - 0.42770400643348694
+    - 0.3230622708797455
+    - 0.42528587579727173
+    - 0.4151560664176941
+    - 0.43316584825515747
+    - 0.45533204078674316
+    - 0.43316975235939026
+    - 0.45374464988708496
+    particle_sizes:
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+    - !!python/tuple
+      - 0.012
+      - 0.012
+      - 0.012
+  samples_per_env: 2
+material:
+  density: 1812.5
+  friction: 0.3875
+  n_particles: 10
+  particle_size: 0.012
+  shape: cube
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 2
+  samples_per_env: 2
+  total_samples_collected: 18
