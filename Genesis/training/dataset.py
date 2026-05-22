@@ -1,6 +1,4 @@
-from dataclasses_json import config
 from torch.utils.data import Dataset
-import pickle
 from pathlib import Path
 import yaml
 import torch
@@ -85,7 +83,7 @@ class PileSweepData(Dataset):
         # Box grid, dimension, and center
         x_dim, y_dim, _ = config["box"]["vol"]
         x_pxl, y_pxl = int(x_dim * TO_PXL), int(y_dim * TO_PXL)
-        self.ctr_in_PXL = (round(x_pxl / 2), round(y_pxl / 2))
+        self.ctr_in_PXL = torch.tensor((round(x_pxl / 2), round(y_pxl / 2), 0))
 
         self._input_grid = torch.zeros((2, x_pxl, y_pxl), dtype=torch.float32)
         self._output_grid = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
@@ -167,11 +165,12 @@ class PileSweepData(Dataset):
             @param index: index of sample in run
         """
         particles = run["states"][index].clone()
-        particles[:, :3] = particles[:, :3] * TO_PXL
         particles_ = run["states_"][index].clone()
-        particles_[:, :3] = particles_[:, :3] * TO_PXL
-        plate_pos = run["p_starts"][index] * TO_PXL
-        plate_pos_ = run["p_stops"][index] * TO_PXL
+
+        particles[:, :3] = particles[:, :3] * TO_PXL + self.ctr_in_PXL
+        particles_[:, :3] = particles_[:, :3] * TO_PXL + self.ctr_in_PXL
+        plate_pos = run["p_starts"][index] * TO_PXL + self.ctr_in_PXL
+        plate_pos_ = run["p_stops"][index] * TO_PXL + self.ctr_in_PXL
         angle = run["angles"][index]
 
         return particles, particles_, plate_pos, plate_pos_, angle
@@ -183,11 +182,29 @@ class PileSweepData(Dataset):
         particle_sizes = config["data_collection"]["sampled"]["particle_sizes"]
         grid_np = grid.numpy()
 
+        def draw_box_points(grid, center, box_dim, angle, density=1):
+            rotated_rect = (
+                (int(center[0]), int(center[1])),
+                (int(box_dim[0]), int(box_dim[1])), 
+                int(angle * 180 / math.pi)
+            )
+            
+            box = cv2.boxPoints(rotated_rect)
+            box = np.int32(box)
+            cv2.fillPoly(grid, [box], density)
+        
+        def quaternion_to_yaw(q):
+            w, x, y, z = q
+            siny_cosp = 2 * (w * z + x * y)
+            cos_y_cosp = 1 - 2 * (y * y + z * z)
+            return math.atan2(siny_cosp, cos_y_cosp)
+        
+
         for idx in range(num_particles):
             particle_state = particle_states[idx]
             dimensions = particle_sizes[idx]
-            center_x = float(particle_state[0]) + self.ctr_in_PXL[0]
-            center_y = float(particle_state[1]) + self.ctr_in_PXL[1]
+            center_x = float(particle_state[0])
+            center_y = float(particle_state[1])
 
             if shape == "sphere":
                 diameter, _, _ = dimensions
@@ -199,66 +216,153 @@ class PileSweepData(Dataset):
                     thickness=-1,
                 )
                 continue
-
-            width, height = float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL
-            half_w = width * 0.5
-            half_h = height * 0.5
-
-            corners = np.array(
-                [
-                    [-half_w, -half_h],
-                    [half_w, -half_h],
-                    [half_w, half_h],
-                    [-half_w, half_h],
-                ],
-                dtype=np.float32,
+            
+            draw_box_points(
+                grid_np,
+                (center_x, center_y),
+                (float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL),
+                quaternion_to_yaw(particle_state[3:]),
+                1
             )
-            rot = Rotation.from_quat(particle_state[3:], scalar_first = True)
-            yaw = float(rot.as_euler("xyz", degrees=False)[2]) * math.pi / 180.0
-            if abs(yaw) > 1e-6:
-                rotation = np.array(
-                    [
-                        [math.cos(yaw), -math.sin(yaw)],
-                        [math.sin(yaw), math.cos(yaw)],
-                    ],
-                    dtype=np.float32,
-                )
-                corners = corners @ rotation.T
 
-            pts = np.round(corners + np.array([center_x, center_y], dtype=np.float32)).astype(np.int32)
-            cv2.fillPoly(grid_np, [pts], color=1)
+            # width, height = float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL
+            # half_w = width * 0.5
+            # half_h = height * 0.5
 
-    def _rotate_plate_torch(self, plate_grid, angle):
-        if isinstance(angle, torch.Tensor):
-            angle_rad = float(angle.item())
-        else:
-            angle_rad = float(angle)
+            # corners = np.array(
+            #     [
+            #         [-half_w, -half_h],
+            #         [half_w, -half_h],
+            #         [half_w, half_h],
+            #         [-half_w, half_h],
+            #     ],
+            #     dtype=np.float32,
+            # )
+            # rot = Rotation.from_quat(particle_state[3:], scalar_first = True)
+            # yaw = float(rot.as_euler("xyz", degrees=False)[2]) * math.pi / 180.0
+            # if abs(yaw) > 1e-6:
+            #     rotation = np.array(
+            #         [
+            #             [math.cos(yaw), -math.sin(yaw)],
+            #             [math.sin(yaw), math.cos(yaw)],
+            #         ],
+            #         dtype=np.float32,
+            #     )
+            #     corners = corners @ rotation.T
 
-        angle_rad = 0
-        cos_a = math.cos(angle_rad)
-        sin_a = math.sin(angle_rad)
+            # pts = np.round(corners + np.array([center_x, center_y], dtype=np.float32)).astype(np.int32)
+            # cv2.fillPoly(grid_np, [pts], color=1)
 
-        rotation_matrix = torch.tensor(
-            [[cos_a, -sin_a], [sin_a, cos_a]], dtype=torch.float32
+    # def _rotate_plate_torch(self, plate_grid, angle):
+    #     if isinstance(angle, torch.Tensor):
+    #         angle_rad = float(angle.item())
+    #     else:
+    #         angle_rad = float(angle)
+
+    #     cos_a = math.cos(angle_rad)
+    #     sin_a = math.sin(angle_rad)
+
+    #     # IMPORTANT: image-space rotation matrix
+    #     rotation_matrix = torch.tensor(
+    #         [[cos_a, sin_a],
+    #         [-sin_a, cos_a]],
+    #         dtype=torch.float32,
+    #         device=plate_grid.device,
+    #     )
+
+    #     grid = plate_grid.unsqueeze(0).unsqueeze(0)
+
+    #     h, w = plate_grid.shape
+
+    #     grid_y, grid_x = torch.meshgrid(
+    #         torch.linspace(-1, 1, h, device=plate_grid.device),
+    #         torch.linspace(-1, 1, w, device=plate_grid.device),
+    #         indexing="ij",
+    #     )
+
+    #     coords = torch.stack([grid_x, grid_y], dim=-1)
+
+    #     coords_flat = coords.reshape(-1, 2)
+
+    #     rotated_flat = coords_flat @ rotation_matrix.T
+
+    #     rotated_coords = rotated_flat.reshape(1, h, w, 2)
+
+    #     rotated_grid = F.grid_sample(
+    #         grid,
+    #         rotated_coords,
+    #         mode="bilinear",
+    #         padding_mode="zeros",
+    #         align_corners=True,
+    #     )
+
+    #     return rotated_grid.squeeze(0).squeeze(0)
+    
+    def _draw_plate_cv2(self, start_pos, end_pos, angle, grid, config):
+        plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
+        plate_dim_x *= TO_PXL
+        plate_dim_y *= TO_PXL
+        grid_np = grid.numpy()
+
+        def draw_box_points(grid, center, box_dim, angle, density=1):
+            rotated_rect = (
+                (int(center[0]), int(center[1])),
+                (int(box_dim[0]), int(box_dim[1])), 
+                int(angle * 180 / math.pi)
+            )
+            
+            box = cv2.boxPoints(rotated_rect)
+            box = np.int32(box)
+            cv2.fillPoly(grid, [box], density)
+
+        # Draw start position
+        draw_box_points(
+            grid_np,
+            start_pos[:2],
+            (plate_dim_x, plate_dim_y),
+            angle,
+            0.5
         )
 
-        grid = plate_grid.unsqueeze(0).unsqueeze(0)
-        h, w = plate_grid.shape
-        grid_y, grid_x = torch.meshgrid(
-            torch.linspace(-1, 1, h, dtype=torch.float32),
-            torch.linspace(-1, 1, w, dtype=torch.float32),
-            indexing="ij",
+        # Draw end position
+        draw_box_points(
+            grid_np,
+            end_pos[:2],
+            (plate_dim_x, plate_dim_y),
+            angle,
+            1
         )
 
-        coords = torch.stack([grid_x, grid_y], dim=-1)
-        coords_flat = coords.reshape(-1, 2)
-        rotated_flat = torch.matmul(coords_flat, rotation_matrix.t())
-        rotated_coords = rotated_flat.reshape(1, h, w, 2)
-        rotated_grid = F.grid_sample(
-            grid, rotated_coords, mode="bilinear", padding_mode="zeros", align_corners=True
-        )
-        return rotated_grid.squeeze(0).squeeze(0)
-
+        # THIS VIZ FEELS LESS ACCURATE
+        # if isinstance(angle, torch.Tensor):
+        #     angle_rad = float(angle.item())
+        # else:
+        #     angle_rad = float(angle)
+        # half_w = plate_dim_x * TO_PXL * 0.5
+        # half_h = plate_dim_y * TO_PXL * 0.5
+        # corners = np.array(
+        #     [
+        #         [-half_w, -half_h],
+        #         [half_w, -half_h],
+        #         [half_w, half_h],
+        #         [-half_w, half_h],
+        #     ],
+        #     dtype=np.float32,
+        # )
+        # if abs(angle_rad) > 1e-6:
+        #     rotation = np.array(
+        #         [
+        #             [math.cos(angle), -math.sin(angle)],
+        #             [math.sin(angle), math.cos(angle)],
+        #         ],
+        #         dtype=np.float32,
+        #     )
+        #     corners = corners @ rotation.T
+        # pts = np.round(corners + np.array(start_pos[:2], dtype=np.float32)).astype(np.int32)
+        # cv2.fillPoly(grid_np, [pts], color=0.5)
+        # pts = np.round(corners + np.array(end_pos[:2], dtype=np.float32)).astype(np.int32)
+        # cv2.fillPoly(grid_np, [pts], color=1)
+        
     def plot_grid(self, grid: torch.Tensor, title: str = "", ontop: bool = False) -> None:
         """Visualize the grid as an image"""
         
@@ -268,7 +372,7 @@ class PileSweepData(Dataset):
         plt.title(title)
         plt.show()
 
-    def plot_grids_stacked(self, input_grid: torch.Tensor, label: torch.Tensor, title: str = "") -> None:
+    def plot_input_and_output(self, input: torch.Tensor, label: torch.Tensor, title: str = "") -> None:
 
         from matplotlib import pyplot as plt
 
@@ -301,21 +405,11 @@ class PileSweepData(Dataset):
             vmax=1
         )
 
-        # # from  matplotlib import pyplot as plt
-
-        # # Plot first array
-        # im1 = axes[0].imshow(input_grid[0], cmap='viridis')
-        # axes[0].set_title("Array 1")
-
-        # # Plot second array
-        # im2 = axes[1].imshow(label, cmap='plasma')
-        # axes[1].set_title("Array 2")
-
         # Adjust layout
         plt.tight_layout()
 
         # Show window
-        # plt.show()
+        plt.show()
 
     def _clear_grids(self):
         self._input_grid.zero_()
@@ -354,6 +448,7 @@ class PileSweepData(Dataset):
             dy0 = gy0 - y0
             dx1 = dx0 + (gx1 - gx0)
             dy1 = dy0 + (gy1 - gy0)
+            # source = drawing[dx0:dx1, dy0:dy1]
             source = drawing[dx0:dx1, dy0:dy1]
             target[mask] = source[mask].to(torch.float32)
         else:
@@ -379,48 +474,42 @@ class PileSweepData(Dataset):
 
         self._draw_particle_grid(particles, self._input_grid[0], config)
         self._draw_particle_grid(particles_, self._output_grid, config)
-
+        self._draw_plate_cv2(plate_pos, plate_pos_, angle, self._input_grid[1], config)
+        self._det_physics(config)
 
         # if dataset includes plates of different sizes
-        x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
-        if (x_dim_plt != self._plt_dim_in_m[0] or y_dim_plt != self._plt_dim_in_m[1]):
-            self._precompute_plate_grid(x_dim_plt, y_dim_plt)
-            self._plate_cache.clear()
+        # x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
+        # if (x_dim_plt != self._plt_dim_in_m[0] or y_dim_plt != self._plt_dim_in_m[1]):
+        #     self._precompute_plate_grid(x_dim_plt, y_dim_plt)
+        #     self._plate_cache.clear()
 
-        rotated_plate = self._rotate_plate_torch(self._base_plate_grid, angle)
+        # rotated_plate = self._rotate_plate_torch(self._base_plate_grid, angle)
 
-        self._color_grid(
-            grid=self._input_grid[1],
-            x=self.ctr_in_PXL[0] + float(plate_pos[0]),
-            y=self.ctr_in_PXL[1] + float(plate_pos[1]),
-            size=self._base_plate_grid.shape,
-            drawing=(rotated_plate > 0.5).float() * 0.5,
-        )
-        self._color_grid(
-            grid=self._input_grid[1],
-            x=self.ctr_in_PXL[0] + float(plate_pos_[0]),
-            y=self.ctr_in_PXL[1] + float(plate_pos_[1]),
-            size=self._base_plate_grid.shape,
-            drawing=(rotated_plate > 0.5).float(),
-        )
+        # self._color_grid(
+        #     grid=self._input_grid[1],
+        #     x=float(plate_pos[0]),
+        #     y=float(plate_pos[1]),
+        #     size=self._base_plate_grid.shape,
+        #     drawing=(rotated_plate > 0.5).float() * 0.5,
+        # )
+        # self._color_grid(
+        #     grid=self._input_grid[1],
+        #     x=float(plate_pos_[0]),
+        #     y=float(plate_pos_[1]),
+        #     size=self._base_plate_grid.shape,
+        #     drawing=(rotated_plate > 0.5).float(),
+        # )
 
-        self._det_physics(config)
         return (self._input_grid, self._physics), self._output_grid
 
 
 def main():
-    dataset = PileSweepData("test/cube/n40/size0.005", run=1)
+    dataset = PileSweepData("corl/sphere/")
 
-    for i in range(len(dataset)//2):
+    for i in range(len(dataset)):
         inputs, label = dataset[i]
         input, physics = inputs
-        dataset.plot_grids_stacked(input, label, title=f"particles and plate {i}")
-        inputs2, label2 = dataset[i+1]
-        input2, physics = inputs2
-        dataset.plot_grids_stacked(input2, label2, title=f"particles and plate {i}")
-        # dataset.plot_grid(input_grid[0], title=f"particles {i}")
-        # dataset.plot_grid(input_grid[1], title=f"plate action {i}")
-        # dataset.plot_grid(label, title=f"next state {i}")
+        dataset.plot_input_and_output(input, label, title=f"particles and plate {i}")
         from matplotlib import pyplot as plt
         plt.show()
         
