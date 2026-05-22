@@ -18,11 +18,9 @@ EPOCHS = 50
 BATCH_SIZE = 128
 LR = 1e-4
 
-def load_genesis_dataset(data_folders : list[str]):
-   return PileSweepData(data_folders)
 
 def chose_loss(loss : str):
-   if "mse":
+   if loss == "mse":
       return torch.nn.MSELoss()
    else:
       from GranularDynamics2.utils import output_dice_loss
@@ -32,7 +30,7 @@ def chose_loss(loss : str):
 if __name__ == "__main__":
 
    continue_training = False
-   data_folders = ["chickpeas/chickspheres_on_wood"]
+   data_folders = ["corl"]
    log_dir = "runs/unet_unconditioned"
    structure_parameters = {
     "in_channels": 2,
@@ -47,9 +45,10 @@ if __name__ == "__main__":
     }
    data_aug = True
    
-   dataset : Dataset = load_genesis_dataset(data_folders)
+   dataset : Dataset = PileSweepData(data_folders)
    # model = UNetConditioned(structure_parameters).to(DEVICE)
-   model = UNetConditioned().to(DEVICE)
+   # model = UNetConditioned().to(DEVICE)
+   model = UNetFiLM()
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    criterion = torch.nn.MSELoss()
    writer = SummaryWriter(log_dir=log_dir)

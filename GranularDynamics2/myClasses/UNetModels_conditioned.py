@@ -68,7 +68,12 @@ class UNetConditioned(nn.Module):
 ###############################
 
 class FiLMGenerator(nn.Module):
-    def __init__(self, physics_dim, hidden=128, film_dims=(64, 128, 256)):
+    def __init__(
+            self,
+            physics_dim,
+            hidden=128,
+            film_dims=(64, 128, 256
+    )):
         super().__init__()
         
         self.mlp = nn.Sequential(
@@ -78,7 +83,7 @@ class FiLMGenerator(nn.Module):
             nn.ReLU(),
         )
         
-        self.to_film = nn.ModuleList({
+        self.to_film = nn.ModuleDict({
             "enc1": nn.Linear(hidden, film_dims[0] * 2),
             "enc2": nn.Linear(hidden, film_dims[1] * 2),
             "bottle": nn.Linear(hidden, film_dims[2] * 2),
@@ -101,7 +106,7 @@ class UNetFiLM(nn.Module):
     def __init__(
         self,
         in_channels=2,
-        physics_dim=6,
+        physics_dim=3,
         out_channels=1,
     ):
         super().__init__()
@@ -136,10 +141,10 @@ class UNetFiLM(nn.Module):
         film_params = self.film(physics)
         
         # Encoder
-        e1 = apply_film(self.enc1(x), *film_params['enc1'])
+        e1 = self.apply_film(self.enc1(x), *film_params['enc1'])
         p1 = self.pool(e1) # down
         
-        e2 = apply_film(self.enc2(p1), *film_params['enc2'])
+        e2 = self.apply_film(self.enc2(p1), *film_params['enc2'])
         p2 = self.pool(e2) # down
         
         # Bottleneck
