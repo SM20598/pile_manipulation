@@ -313,6 +313,19 @@ class SandboxManipulation:
                 f"Safety margin of {self._safety_margin} exceeded. Box volume is x={self._box_vol[0]}, y={self._box_vol[1]}, but granular volume is x={self._granular_vol[0]}, y={self._granular_vol[1]}.")
 
         granular_touch_height = self._granular_vol[2]/2
+        if self._material_type == "rsa":
+            shape = material_properties.get("shape", None)
+            if shape is None:
+                shape = "cube" if material_properties.get("cubes", False) else "sphere"
+            self.material, self._rsa_particle_sizes = random_sequential_addition(
+                scene=self._scene,
+                granular_vol=self._granular_vol,
+                shape=shape,
+                num_particles=material_properties.get("n_particles", 1000),
+                particle_size=material_properties["particle_size"],
+                wall_thickness=self._wall_thickness,
+            )                
+            granular_touch_height = self._get_rsa_particle_touch_height(material_properties)
         
         self.material = random_sequential_addition(
             scene=self._scene,
