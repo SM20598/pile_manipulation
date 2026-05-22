@@ -1,0 +1,112 @@
+box:
+  friction: 0.2
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.2
+    density:
+    - 3300.8701171875
+    - 3275.451904296875
+    - 2973.776123046875
+    - 3312.03173828125
+    - 2352.224853515625
+    - 3207.361328125
+    - 2640.10986328125
+    - 2996.028564453125
+    - 2798.553466796875
+    - 2592.56494140625
+    friction:
+    - 0.44710367918014526
+    - 0.517672598361969
+    - 0.4749009609222412
+    - 0.45651552081108093
+    - 0.417270302772522
+    - 0.49243661761283875
+    - 0.5803556442260742
+    - 0.48996567726135254
+    - 0.4876515567302704
+    - 0.5295032858848572
+    particle_sizes:
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+  samples_per_env: 2
+material:
+  density: 2875.0
+  friction: 0.5
+  n_particles: 10
+  particle_size: 0.005
+  shape: sphere
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 0
+  samples_per_env: 2
+  total_samples_collected: 20

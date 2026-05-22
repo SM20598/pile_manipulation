@@ -1,0 +1,112 @@
+box:
+  friction: 0.05
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.05
+    density:
+    - 5961.978515625
+    - 4848.1552734375
+    - 4856.814453125
+    - 5157.4921875
+    - 5042.93408203125
+    - 4410.69580078125
+    - 4372.4599609375
+    - 5383.830078125
+    - 5062.630859375
+    - 5908.55810546875
+    friction:
+    - 0.45522716641426086
+    - 0.45392486453056335
+    - 0.42599985003471375
+    - 0.49174556136131287
+    - 0.43705153465270996
+    - 0.49874281883239746
+    - 0.4226851165294647
+    - 0.4474236071109772
+    - 0.53700852394104
+    - 0.46254679560661316
+    particle_sizes:
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+    - !!python/tuple
+      - 0.0085
+      - 0.0085
+      - 0.0085
+  samples_per_env: 2
+material:
+  density: 5000.0
+  friction: 0.5
+  n_particles: 10
+  particle_size: 0.0085
+  shape: sphere
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 0
+  samples_per_env: 2
+  total_samples_collected: 20
