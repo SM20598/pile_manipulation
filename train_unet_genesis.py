@@ -15,7 +15,7 @@ import os
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS = 50
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 LR = 1e-4
 
 
@@ -46,9 +46,18 @@ if __name__ == "__main__":
    data_aug = True
    
    dataset : Dataset = PileSweepData(data_folders)
+   
+   # +++ INSPECT DATA +++
+   # for i in range(len(dataset)):
+   #    inputs, label = dataset[i]
+   #    inputt, _ = inputs
+   #    dataset.plot_input_and_output(inputt.cpu(), label.cpu())
+      
+   # +++ MODEL CHOICE +++
    # model = UNetConditioned(structure_parameters).to(DEVICE)
    # model = UNetConditioned().to(DEVICE)
-   model = UNetFiLM()
+   model = UNetFiLM().to(DEVICE)
+
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    criterion = torch.nn.MSELoss()
    writer = SummaryWriter(log_dir=log_dir)
@@ -69,21 +78,21 @@ if __name__ == "__main__":
       
       val_loader = DataLoader(
             val_data,
-            batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
+            batch_size=BATCH_SIZE // 8 if data_aug else BATCH_SIZE,
             shuffle=False,
             num_workers=4,
             pin_memory=True
          )
       train_loader = DataLoader(
          train_data,
-         batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
+         batch_size= BATCH_SIZE // 8 if data_aug else BATCH_SIZE,
          shuffle=True,
          num_workers=4,
          pin_memory=True
       )
       test_loader = DataLoader(
          test_data,
-         batch_size=BATCH_SIZE // 4 if data_aug else BATCH_SIZE,
+         batch_size=BATCH_SIZE // 8 if data_aug else BATCH_SIZE,
          shuffle=False,
          num_workers=4,
          pin_memory=True
@@ -105,35 +114,31 @@ if __name__ == "__main__":
                outputs = outputs.to(DEVICE)
                
                if data_aug:
-
-                  inputs_aug = torch.cat([
-                     inputs,
-                     torch.rot90(inputs, 1, (-2, -1)),
-                     torch.rot90(inputs, 2, (-2, -1)),
-                     torch.rot90(inputs, 3, (-2, -1)),
-                  ], dim=0)
-
-                  outputs_aug = torch.cat([
-                     outputs,
-                     torch.rot90(outputs, 1, (-2, -1)),
-                     torch.rot90(outputs, 2, (-2, -1)),
-                     torch.rot90(outputs, 3, (-2, -1)),
-                  ], dim=0)
-
-                  physics_aug = physics.repeat(4, 1)
-
+                  inputs_rot = [torch.rot90(inputs, k, dims=(-2, -1)) for k in range(4)]
+                  inputs_mir = [torch.flip(r, dims=[-1]) for r in inputs_rot]
+                  inputs = torch.cat(inputs_rot + inputs_mir, dim=0)
+                  
+                  outputs_rot = [torch.rot90(outputs, k, dims=(-2, -1)) for k in range(4)]
+                  outputs_mir = [torch.flip(r, dims=[-1]) for r in outputs_rot]
+                  outputs = torch.cat(outputs_rot + outputs_mir, dim=0)
+                  
+                  physics = physics.repeat(8, 1)
+                  
                optimizer.zero_grad(set_to_none=True)
 
-               with torch.amp.autocast(device_type=DEVICE, dtype=torch.float16):
+               with torch.amp.autocast(device_type=DEVICE, dtype=torch.bfloat16):
                   pred_next = model(inputs, physics)
-                  loss = criterion(pred_next.squeeze(1), outputs)  # (B, 1, H, W) -> (B, H, W)
+               loss = criterion(pred_next.squeeze(1).float(), outputs)  # (B, 1, H, W) -> (B, H, W)
                
                scaler.scale(loss).backward()
+               scaler.unscale_(optimizer)
+               torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                scaler.step(optimizer)
                scaler.update()
 
                total_loss += loss.item() * inputs.size(0)
                train_size += inputs.size(0)
+         print("Total loss", total_loss, "train size", train_size)
          
          # VALIDATION LOOP
          model.eval()
@@ -148,7 +153,8 @@ if __name__ == "__main__":
                pred_next = model(inputs, physics)
                val_loss += criterion(pred_next.squeeze(1), outputs.squeeze(1)).item() * inputs.size(0)
                val_size += inputs.size(0)
-
+         print("Avg val loss", avg_val_losses, "train size", val_size)
+         
          avg_val_loss = val_loss / val_size
          avg_val_losses.append(avg_val_loss)
 
