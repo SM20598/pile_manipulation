@@ -246,80 +246,111 @@ class PileSweepData(Dataset):
             )
     
     def _draw_plate(self, start_pos, end_pos, angle, grid, config, binary=False):
+        y_coords = torch.linspace(0, 127, steps=128)
+        x_coords = torch.linspace(0, 127, steps=128)
+        grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing='ij')
+        self.coord_grid = torch.stack([grid_x, grid_y], dim=0)
         plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
         plate_dim_x *= TO_PXL
         plate_dim_y *= TO_PXL
-        grid_np = grid.numpy()        
 
-        # def soft_rectangle(grid_x, grid_y, cx, cy, theta, hx, hy, sigma):
-        #     # translate
-        #     x = grid_x - cx
-        #     y = grid_y - cy
+        def differentiable_rectangle_occupancy(pos, theta, rect_w, rect_h, sigma=1.5):
+            """
+            Creates a differentiable soft occupancy grid for a rotated rectangle.
 
-        #     # rotate into local frame
-        #     c = torch.cos(theta)
-        #     s = torch.sin(theta)
+            Args:
+                H, W       : grid height and width
+                cx, cy     : rectangle center (in pixel coordinates)
+                theta      : rotation angle in radians
+                rect_w     : rectangle width
+                rect_h     : rectangle height
+                sigma      : edge softness
+            Returns:
+                occupancy  : [H, W] tensor with values in [0,1]
+            """
+            _, H, W = self._input_grid.shape
+            cx, cy = pos[:2]
+            # Create coordinate grid
+            ys = torch.linspace(0, H - 1, H)
+            xs = torch.linspace(0, W - 1, W)
 
-        #     xr =  c*x + s*y
-        #     yr = -s*x + c*y
+            yy, xx = torch.meshgrid(ys, xs, indexing="ij")
 
-        #     qx = torch.abs(xr) - hx
-        #     qy = torch.abs(yr) - hy
+            # Translate points into rectangle-centered frame
+            x = xx - cx
+            y = yy - cy
 
-        #     dx = torch.clamp(qx, min=0)
-        #     dy = torch.clamp(qy, min=0)
+            # Rotation into local rectangle coordinates
+            c = torch.cos(theta)
+            s = torch.sin(theta)
 
-        #     outside = torch.sqrt(dx**2 + dy**2)
+            xr =  c * x + s * y
+            yr = -s * x + c * y
 
-        #     inside = torch.clamp(torch.maximum(qx, qy), max=0)
+            # Rectangle half extents
+            hx = rect_w / 2.0
+            hy = rect_h / 2.0
 
-        #     sdf = outside + inside
+            # Signed distance field (SDF)
+            qx = torch.abs(xr) - hx
+            qy = torch.abs(yr) - hy
 
-        #     occ = torch.exp(-(sdf**2)/(2*sigma**2))
+            dx = torch.clamp(qx, min=0.0)
+            dy = torch.clamp(qy, min=0.0)
 
-        #     return occ
+            outside_dist = torch.sqrt(dx**2 + dy**2 + 1e-8)
+
+            inside_dist = torch.clamp(torch.maximum(qx, qy), max=0.0)
+
+            sdf = outside_dist + inside_dist
+
+            # Convert SDF -> soft occupancy
+            return torch.sigmoid(-sdf / sigma)
+
         
-        # action_grid = create_sweep_representation(
-        #     start=start_pos[:2],
-        #     end=end_pos[:2],
-        #     tool_width=plate_dim_y,
-        #     tool_length=plate_dim_x,
-        #     theta=angle,
-        # )
-        # print("input grid:", self._input_grid.shape)
-        # print("action grid:", action_grid.shape)
-
-        # self._input_grid[1] = action_grid
+        occ1 = differentiable_rectangle_occupancy(
+            start_pos,
+            angle,
+            plate_dim_x,
+            plate_dim_y
+        )
+        occ2 = differentiable_rectangle_occupancy(
+            end_pos,
+            angle,
+            plate_dim_x,
+            plate_dim_y
+        )
+        self._input_grid[1] = 1 - (1 - occ1*0.5) * (1 - occ2)
     
-
-        def draw_box_points(grid, center, box_dim, angle, density=1):
-            rotated_rect = (
-                (int(center[0]), int(center[1])),
-                (int(box_dim[0]), int(box_dim[1])), 
-                int(angle * 180 / math.pi)
-            )
+        # grid_np = grid.numpy()
+        # def draw_box_points(grid, center, box_dim, angle, density=1):
+        #     rotated_rect = (
+        #         (int(center[0]), int(center[1])),
+        #         (int(box_dim[0]), int(box_dim[1])), 
+        #         int(angle * 180 / math.pi)
+        #     )
             
-            box = cv2.boxPoints(rotated_rect)
-            box = np.int32(box)
-            cv2.fillPoly(grid, [box], density)
+        #     box = cv2.boxPoints(rotated_rect)
+        #     box = np.int32(box)
+        #     cv2.fillPoly(grid, [box], density)
         
-        # Draw start position
-        draw_box_points(
-            grid_np,
-            start_pos[:2],
-            (plate_dim_x, plate_dim_y),
-            angle,
-            0.5
-        )
+        # # Draw start position
+        # draw_box_points(
+        #     grid_np,
+        #     start_pos[:2],
+        #     (plate_dim_x, plate_dim_y),
+        #     angle,
+        #     0.5
+        # )
 
-        # Draw end position
-        draw_box_points(
-            grid_np,
-            end_pos[:2],
-            (plate_dim_x, plate_dim_y),
-            angle,
-            1
-        )
+        # # Draw end position
+        # draw_box_points(
+        #     grid_np,
+        #     end_pos[:2],
+        #     (plate_dim_x, plate_dim_y),
+        #     angle,
+        #     1
+        # )
         
     def plot_grid(self, grid: torch.Tensor, title: str = "", ontop: bool = False) -> None:
         """Visualize the grid as an image"""
