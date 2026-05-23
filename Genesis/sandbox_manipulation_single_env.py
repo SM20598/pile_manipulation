@@ -239,13 +239,16 @@ class SandboxManipulation:
 
         granular_touch_height = self._granular_vol[2]/2
         if self._material_type == "rsa":
-            self.material = random_sequential_addition(
+            shape = material_properties.get("shape", None)
+            if shape is None:
+                shape = "cube" if material_properties.get("cubes", False) else "sphere"
+            self.material, self._rsa_particle_sizes = random_sequential_addition(
                 scene=self._scene,
-                box_pos=self._box_pos,
                 granular_vol=self._granular_vol,
-                material_properties=material_properties,
+                shape=shape,
+                num_particles=material_properties.get("n_particles", 1000),
+                particle_size=material_properties["particle_size"],
                 wall_thickness=self._wall_thickness,
-                color=granular_color
             )                
             granular_touch_height = self._particle_size/2 if isinstance(self._particle_size, float) else min(self._particle_size)/4
         
