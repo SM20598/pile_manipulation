@@ -31,30 +31,20 @@ if __name__ == "__main__":
 
    continue_training = False
    data_folders = ["corl"]
-   log_dir = "runs/unet_unconditioned"
-   structure_parameters = {
-    "in_channels": 2,
-    "out_channels": 1,
-    "features": [4,8],
-    "kernel_size": 3,
-    "activation": 'relu',
-    "activation_list": ['relu'],
-    "residual": True,
-    "bottleneck_type": "None",
-    "mixed_blocks": []
-    }
+   log_dir = "runs/unetfilm"
    data_aug = True
    
-   dataset : Dataset = PileSweepData(data_folders)
-   
+   train_dataset : Dataset = PileSweepData(data_folders, split="train")
+   val_dataset   : Dataset = PileSweepData(data_folders, split="val")
+   test_dataset  : Dataset = PileSweepData(data_folders, split="test")
+
    # +++ INSPECT DATA +++
-   # for i in range(len(dataset)):
-   #    inputs, label = dataset[i]
+   # for i in range(len(train_dataset)):
+   #    inputs, label = train_dataset[i]
    #    inputt, _ = inputs
-   #    dataset.plot_input_and_output(inputt.cpu(), label.cpu())
+   #    train_dataset.plot_input_and_output(inputt.cpu(), label.cpu())
       
    # +++ MODEL CHOICE +++
-   # model = UNetConditioned(structure_parameters).to(DEVICE)
    # model = UNetConditioned().to(DEVICE)
    model = UNetFiLM().to(DEVICE)
 
@@ -65,38 +55,13 @@ if __name__ == "__main__":
    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
    
    
+   batch_size = BATCH_SIZE // 8 if data_aug else BATCH_SIZE
+   train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  num_workers=4, pin_memory=True)
+   val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+   test_loader  = DataLoader(test_dataset,  batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+
    avg_val_losses = []
    with trange(EPOCHS, desc="Training Epochs") as tbar:
-   
-      n_samples = len(dataset)
-      
-      n_train = int(0.88 * n_samples)
-      n_val = int(0.02 * n_samples)
-      train_data = torch.utils.data.Subset(dataset, range(0, n_train))
-      val_data   = torch.utils.data.Subset(dataset, range(n_train, n_train+ n_val))
-      test_data   = torch.utils.data.Subset(dataset, range(n_train+ n_val, n_samples))
-      
-      val_loader = DataLoader(
-            val_data,
-            batch_size=BATCH_SIZE // 8 if data_aug else BATCH_SIZE,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True
-         )
-      train_loader = DataLoader(
-         train_data,
-         batch_size= BATCH_SIZE // 8 if data_aug else BATCH_SIZE,
-         shuffle=True,
-         num_workers=4,
-         pin_memory=True
-      )
-      test_loader = DataLoader(
-         test_data,
-         batch_size=BATCH_SIZE // 8 if data_aug else BATCH_SIZE,
-         shuffle=False,
-         num_workers=4,
-         pin_memory=True
-      )
       
       for epoch in tbar:
          model.train()

@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset
 from pathlib import Path
+import hashlib
 import yaml
 import torch
 import torch.nn.functional as F
@@ -17,14 +18,24 @@ class PileSweepData(Dataset):
     def __init__(
             self,
             paths: list[str] | str,
-            run: int | None = None
+            run: int | None = None,
+            split: str | None = None,
+            val_pct: int = 5,
+            test_pct: int = 5,
         ):
         """
         Initialize dataset with either a folder containing data or a specific run.
 
             @param paths: list of folder paths or a single folder path containing data files
             @param run: number of a specific run
+            @param split: one of "train", "val", "test", or None (all data).
+                Each run file is assigned a split deterministically by hashing its
+                path, so adding new runs never reassigns existing ones and every
+                physics group appears in all three splits.
+            @param val_pct: percentage of runs assigned to validation (default 10)
+            @param test_pct: percentage of runs assigned to test (default 10)
         """
+        assert split in (None, "train", "val", "test"), f"Invalid split: {split!r}"
         self.runs = []
         self.configs = []
         self._run_lengths = []
@@ -46,6 +57,12 @@ class PileSweepData(Dataset):
                 raise FileNotFoundError(
                     f"No data runs found in path: {full_path}"
                 )
+
+            if split is not None:
+                run_files = [
+                    (df, cf) for df, cf in run_files
+                    if self._assign_split(df, full_path, val_pct, test_pct) == split
+                ]
 
             for data_file, config_file in run_files:
                 self.runs.append(torch.load(data_file, map_location="cpu"))
@@ -152,6 +169,31 @@ class PileSweepData(Dataset):
                 run_paths.append((data_file, config_file))
 
         return run_paths
+
+    @staticmethod
+    def _assign_split(data_file: Path, root: Path, val_pct: int, test_pct: int) -> str:
+        """Deterministically assigns a run to train/val/test by hashing its physics
+        identity (shape, n_particles, particle_size, mat_friction, density, box_friction).
+        All runs sharing the same physics params land in the same split, so collecting
+        multiple trajectories per condition never causes leakage."""
+        config_file = data_file.with_name(
+            data_file.stem.replace("_data", "") + "_config.yaml"
+        )
+        cfg = yaml.full_load(config_file.read_text())
+        key = "%s|%d|%.6f|%.6f|%.6f|%.6f" % (
+            cfg["material"]["shape"],
+            cfg["material"]["n_particles"],
+            cfg["material"]["particle_size"],
+            cfg["material"]["friction"],
+            cfg["material"]["density"],
+            cfg["box"]["friction"],
+        )
+        h = int(hashlib.md5(key.encode()).hexdigest(), 16) % 100
+        if h < test_pct:
+            return "test"
+        elif h < test_pct + val_pct:
+            return "val"
+        return "train"
 
     def _get_plate_dims(self, config):
         return config["plate"]["size"]
@@ -372,7 +414,7 @@ class PileSweepData(Dataset):
         plt.title(title)
         plt.show()
 
-    def plot_input_and_output(self, input: torch.Tensor, label: torch.Tensor, title: str = "") -> None:
+    def plot_input_and_output(self, input_grid: torch.Tensor, label_grid: torch.Tensor, title: str = "") -> None:
 
         from matplotlib import pyplot as plt
 
@@ -397,7 +439,7 @@ class PileSweepData(Dataset):
         )
         # Plot first occupancy grid
         axes[1].imshow(
-            label,
+            label_grid,
             cmap="Blues",
             alpha=0.5,
             origin="lower",
@@ -500,7 +542,7 @@ class PileSweepData(Dataset):
         #     drawing=(rotated_plate > 0.5).float(),
         # )
 
-        return (self._input_grid, self._physics), self._output_grid
+        return (self._input_grid.clone(), self._physics.clone()), self._output_grid.clone()
 
 
 def main():
