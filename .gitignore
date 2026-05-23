@@ -1,3 +1,7 @@
 .venv/
 Genesis/utilities/__pycache__/*
+Genesis/training/__pycache__/*
+Genesis/examples/__pycache__/*
 Genesis/__pycache__/*
+GranularDynamics2/myClasses/__pycache__/*
+GranularDynamics2/__pycache__/*

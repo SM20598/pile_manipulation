@@ -8,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 from Genesis.training.dataset import PileSweepData
 from GranularDynamics2.myClasses.UNetModels_modular import UNet
 from GranularDynamics2.myClasses.UNetModels_conditioned import UNetConditioned, UNetFiLM
+from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
 from tqdm import trange
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -46,7 +47,8 @@ if __name__ == "__main__":
       
    # +++ MODEL CHOICE +++
    # model = UNetConditioned().to(DEVICE)
-   model = UNetFiLM().to(DEVICE)
+   # model = UNetFiLM().to(DEVICE)
+   model = NFDUNetFiLM().to(DEVICE)
 
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    criterion = torch.nn.MSELoss()
