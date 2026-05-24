@@ -32,7 +32,7 @@ if __name__ == "__main__":
 
    continue_training = False
    data_folders = ["corl"]
-   log_dir = "runs/unetfilm"
+   log_dir = "runs/nfdunetfilm_diff"
    data_aug = True
    
    train_dataset : Dataset = PileSweepData(data_folders, split="train")
