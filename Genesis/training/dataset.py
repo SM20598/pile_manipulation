@@ -107,29 +107,7 @@ class PileSweepData(Dataset):
 
         # Plate grid and dimension
         x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
-        self._precompute_plate_grid(x_dim_plt, y_dim_plt)
         self._plt_dim_in_m = (x_dim_plt, y_dim_plt)
-
-    def _precompute_plate_grid(
-            self,
-            x_dim_plt,
-            y_dim_plt
-        ) -> None:
-        """
-        Draws an occupancy grid for the plate in neutral position.
-        """
-        
-        plt_pxl = int(max(x_dim_plt, y_dim_plt) * TO_PXL)
-        self._base_plate_grid = torch.zeros((plt_pxl, plt_pxl))
-        
-        # Draw plate on grid
-        self._color_grid(
-            grid=self._base_plate_grid,
-            x=plt_pxl/2,
-            y=plt_pxl/2,
-            size=(x_dim_plt*TO_PXL, y_dim_plt*TO_PXL),
-            drawing=1
-        )
 
     def _count_samples_in_run(self, run):
         return run["states"].shape[0]
@@ -266,144 +244,110 @@ class PileSweepData(Dataset):
                 quaternion_to_yaw(particle_state[3:]),
                 1
             )
-
-            # width, height = float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL
-            # half_w = width * 0.5
-            # half_h = height * 0.5
-
-            # corners = np.array(
-            #     [
-            #         [-half_w, -half_h],
-            #         [half_w, -half_h],
-            #         [half_w, half_h],
-            #         [-half_w, half_h],
-            #     ],
-            #     dtype=np.float32,
-            # )
-            # rot = Rotation.from_quat(particle_state[3:], scalar_first = True)
-            # yaw = float(rot.as_euler("xyz", degrees=False)[2]) * math.pi / 180.0
-            # if abs(yaw) > 1e-6:
-            #     rotation = np.array(
-            #         [
-            #             [math.cos(yaw), -math.sin(yaw)],
-            #             [math.sin(yaw), math.cos(yaw)],
-            #         ],
-            #         dtype=np.float32,
-            #     )
-            #     corners = corners @ rotation.T
-
-            # pts = np.round(corners + np.array([center_x, center_y], dtype=np.float32)).astype(np.int32)
-            # cv2.fillPoly(grid_np, [pts], color=1)
-
-    # def _rotate_plate_torch(self, plate_grid, angle):
-    #     if isinstance(angle, torch.Tensor):
-    #         angle_rad = float(angle.item())
-    #     else:
-    #         angle_rad = float(angle)
-
-    #     cos_a = math.cos(angle_rad)
-    #     sin_a = math.sin(angle_rad)
-
-    #     # IMPORTANT: image-space rotation matrix
-    #     rotation_matrix = torch.tensor(
-    #         [[cos_a, sin_a],
-    #         [-sin_a, cos_a]],
-    #         dtype=torch.float32,
-    #         device=plate_grid.device,
-    #     )
-
-    #     grid = plate_grid.unsqueeze(0).unsqueeze(0)
-
-    #     h, w = plate_grid.shape
-
-    #     grid_y, grid_x = torch.meshgrid(
-    #         torch.linspace(-1, 1, h, device=plate_grid.device),
-    #         torch.linspace(-1, 1, w, device=plate_grid.device),
-    #         indexing="ij",
-    #     )
-
-    #     coords = torch.stack([grid_x, grid_y], dim=-1)
-
-    #     coords_flat = coords.reshape(-1, 2)
-
-    #     rotated_flat = coords_flat @ rotation_matrix.T
-
-    #     rotated_coords = rotated_flat.reshape(1, h, w, 2)
-
-    #     rotated_grid = F.grid_sample(
-    #         grid,
-    #         rotated_coords,
-    #         mode="bilinear",
-    #         padding_mode="zeros",
-    #         align_corners=True,
-    #     )
-
-    #     return rotated_grid.squeeze(0).squeeze(0)
     
-    def _draw_plate_cv2(self, start_pos, end_pos, angle, grid, config):
+    def _draw_plate(self, start_pos, end_pos, angle, config, binary=False):
         plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
         plate_dim_x *= TO_PXL
         plate_dim_y *= TO_PXL
-        grid_np = grid.numpy()
 
-        def draw_box_points(grid, center, box_dim, angle, density=1):
-            rotated_rect = (
-                (int(center[0]), int(center[1])),
-                (int(box_dim[0]), int(box_dim[1])), 
-                int(angle * 180 / math.pi)
-            )
+        if not binary:
+            def differentiable_rectangle_occupancy(pos, theta, rect_w, rect_h, sigma=1.5):
+                """
+                Creates a differentiable soft occupancy grid for a rotated rectangle.
+
+                Args:
+                    H, W       : grid height and width
+                    cx, cy     : rectangle center (in pixel coordinates)
+                    theta      : rotation angle in radians
+                    rect_w     : rectangle width
+                    rect_h     : rectangle height
+                    sigma      : edge softness
+                Returns:
+                    occupancy  : [H, W] tensor with values in [0,1]
+                """
+                _, H, W = self._input_grid.shape
+                cx, cy = pos[:2]
+                # Create coordinate grid
+                ys = torch.linspace(0, H - 1, H)
+                xs = torch.linspace(0, W - 1, W)
+
+                yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+
+                # Translate points into rectangle-centered frame
+                x = xx - cx
+                y = yy - cy
+
+                # Rotation into local rectangle coordinates
+                c = torch.cos(theta)
+                s = torch.sin(theta)
+
+                xr =  c * x + s * y
+                yr = -s * x + c * y
+
+                # Rectangle half extents
+                hx = rect_w / 2.0
+                hy = rect_h / 2.0
+
+                # Signed distance field (SDF)
+                qx = torch.abs(xr) - hx
+                qy = torch.abs(yr) - hy
+
+                dx = torch.clamp(qx, min=0.0)
+                dy = torch.clamp(qy, min=0.0)
+
+                outside_dist = torch.sqrt(dx**2 + dy**2 + 1e-8)
+
+                inside_dist = torch.clamp(torch.maximum(qx, qy), max=0.0)
+
+                sdf = outside_dist + inside_dist
+
+                # Convert SDF -> soft occupancy
+                return torch.sigmoid(-sdf / sigma)
+
             
-            box = cv2.boxPoints(rotated_rect)
-            box = np.int32(box)
-            cv2.fillPoly(grid, [box], density)
+            occ1 = differentiable_rectangle_occupancy(
+                start_pos,
+                angle,
+                plate_dim_x,
+                plate_dim_y
+            )
+            occ2 = differentiable_rectangle_occupancy(
+                end_pos,
+                angle,
+                plate_dim_x,
+                plate_dim_y
+            )
+            self._input_grid[1] = 1 - (1 - occ1*0.5) * (1 - occ2)
+        else:
+            grid_np = self._input_grid[1].numpy()
+            def draw_box_points(grid, center, box_dim, angle, density=1):
+                rotated_rect = (
+                    (int(center[0]), int(center[1])),
+                    (int(box_dim[0]), int(box_dim[1])), 
+                    int(angle * 180 / math.pi)
+                )
+                
+                box = cv2.boxPoints(rotated_rect)
+                box = np.int32(box)
+                cv2.fillPoly(grid, [box], density)
+            
+            # Draw start position
+            draw_box_points(
+                grid_np,
+                start_pos[:2],
+                (plate_dim_x, plate_dim_y),
+                angle,
+                0.5
+            )
 
-        # Draw start position
-        draw_box_points(
-            grid_np,
-            start_pos[:2],
-            (plate_dim_x, plate_dim_y),
-            angle,
-            0.5
-        )
-
-        # Draw end position
-        draw_box_points(
-            grid_np,
-            end_pos[:2],
-            (plate_dim_x, plate_dim_y),
-            angle,
-            1
-        )
-
-        # THIS VIZ FEELS LESS ACCURATE
-        # if isinstance(angle, torch.Tensor):
-        #     angle_rad = float(angle.item())
-        # else:
-        #     angle_rad = float(angle)
-        # half_w = plate_dim_x * TO_PXL * 0.5
-        # half_h = plate_dim_y * TO_PXL * 0.5
-        # corners = np.array(
-        #     [
-        #         [-half_w, -half_h],
-        #         [half_w, -half_h],
-        #         [half_w, half_h],
-        #         [-half_w, half_h],
-        #     ],
-        #     dtype=np.float32,
-        # )
-        # if abs(angle_rad) > 1e-6:
-        #     rotation = np.array(
-        #         [
-        #             [math.cos(angle), -math.sin(angle)],
-        #             [math.sin(angle), math.cos(angle)],
-        #         ],
-        #         dtype=np.float32,
-        #     )
-        #     corners = corners @ rotation.T
-        # pts = np.round(corners + np.array(start_pos[:2], dtype=np.float32)).astype(np.int32)
-        # cv2.fillPoly(grid_np, [pts], color=0.5)
-        # pts = np.round(corners + np.array(end_pos[:2], dtype=np.float32)).astype(np.int32)
-        # cv2.fillPoly(grid_np, [pts], color=1)
+            # Draw end position
+            draw_box_points(
+                grid_np,
+                end_pos[:2],
+                (plate_dim_x, plate_dim_y),
+                angle,
+                1
+            )
         
     def plot_grid(self, grid: torch.Tensor, title: str = "", ontop: bool = False) -> None:
         """Visualize the grid as an image"""
@@ -516,37 +460,14 @@ class PileSweepData(Dataset):
 
         self._draw_particle_grid(particles, self._input_grid[0], config)
         self._draw_particle_grid(particles_, self._output_grid, config)
-        self._draw_plate_cv2(plate_pos, plate_pos_, angle, self._input_grid[1], config)
+        self._draw_plate(plate_pos, plate_pos_, angle, config)
         self._det_physics(config)
-
-        # if dataset includes plates of different sizes
-        # x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
-        # if (x_dim_plt != self._plt_dim_in_m[0] or y_dim_plt != self._plt_dim_in_m[1]):
-        #     self._precompute_plate_grid(x_dim_plt, y_dim_plt)
-        #     self._plate_cache.clear()
-
-        # rotated_plate = self._rotate_plate_torch(self._base_plate_grid, angle)
-
-        # self._color_grid(
-        #     grid=self._input_grid[1],
-        #     x=float(plate_pos[0]),
-        #     y=float(plate_pos[1]),
-        #     size=self._base_plate_grid.shape,
-        #     drawing=(rotated_plate > 0.5).float() * 0.5,
-        # )
-        # self._color_grid(
-        #     grid=self._input_grid[1],
-        #     x=float(plate_pos_[0]),
-        #     y=float(plate_pos_[1]),
-        #     size=self._base_plate_grid.shape,
-        #     drawing=(rotated_plate > 0.5).float(),
-        # )
 
         return (self._input_grid.clone(), self._physics.clone()), self._output_grid.clone()
 
 
 def main():
-    dataset = PileSweepData("corl/sphere/")
+    dataset = PileSweepData("test/cube/")
 
     for i in range(len(dataset)):
         inputs, label = dataset[i]
