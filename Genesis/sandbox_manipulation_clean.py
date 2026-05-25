@@ -453,6 +453,8 @@ class SandboxManipulation:
                 if size_values is None:
                     size_values = [
                         particle.morph.size if hasattr(particle.morph, "size")
+                        else (particle.morph.radius * 2, particle.morph.radius * 2, particle.morph.height)
+                        if hasattr(particle.morph, "height") and hasattr(particle.morph, "radius")
                         else (particle.morph.radius * 2,) * 3
                         for particle in self.material
                     ]
@@ -468,6 +470,15 @@ class SandboxManipulation:
                 xy_scale = 1.0 + (math.sqrt(2) - 1.0) * is_cube  # sqrt(2) for cubes, 1.0 for others
                 collision_half_extents = half_extents.clone()
                 collision_half_extents[:, :2] = half_extents[:, :2] * xy_scale.unsqueeze(1)
+                is_cylinder = torch.tensor(
+                    [hasattr(p.morph, "height") and hasattr(p.morph, "radius") for p in self.material],
+                    dtype=torch.bool, device=gs.device,
+                )
+                placement_half_extents = half_extents.clone()
+                if bool(is_cylinder.any().item()):
+                    cylinder_half_extent = half_extents[is_cylinder].max(dim=1).values
+                    placement_half_extents[is_cylinder] = cylinder_half_extent.unsqueeze(1).expand(-1, 3)
+                    collision_half_extents[is_cylinder] = placement_half_extents[is_cylinder]
 
                 width, depth, height = self._box_params["vol"]
                 wall = float(self._wall_thickness)
@@ -475,6 +486,7 @@ class SandboxManipulation:
                 inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
                 positions = self._sample_nonoverlapping_particle_positions(
                     half_extents=half_extents,
+                    placement_half_extents=placement_half_extents,
                     collision_half_extents=collision_half_extents,
                     inner_min=inner_min,
                     inner_max=inner_max,
@@ -509,6 +521,7 @@ class SandboxManipulation:
         self,
         *,
         half_extents: torch.Tensor,
+        placement_half_extents: torch.Tensor,
         collision_half_extents: torch.Tensor,
         inner_min: torch.Tensor,
         inner_max: torch.Tensor,
@@ -529,7 +542,7 @@ class SandboxManipulation:
             particle_idx = int(particle_idx_tensor.item())
             active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
             span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
-            z_pos = inner_min[2] + half_extents[particle_idx, 2] + min_gap
+            z_pos = inner_min[2] + placement_half_extents[particle_idx, 2] + min_gap
             for _ in range(128):
                 active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
                 if active_idx.numel() == 0:
@@ -556,6 +569,7 @@ class SandboxManipulation:
             if active.any():
                 return self._grid_particle_positions(
                     half_extents=half_extents,
+                    placement_half_extents=placement_half_extents,
                     collision_half_extents=collision_half_extents,
                     inner_min=inner_min,
                     inner_max=inner_max,
@@ -569,6 +583,7 @@ class SandboxManipulation:
         self,
         *,
         half_extents: torch.Tensor,
+        placement_half_extents: torch.Tensor,
         collision_half_extents: torch.Tensor,
         inner_min: torch.Tensor,
         inner_max: torch.Tensor,
@@ -618,10 +633,10 @@ class SandboxManipulation:
             cell_order = torch.randperm(cells.shape[0], device=gs.device)[:n_particles]
             particle_order = torch.randperm(n_particles, device=gs.device)
             xy = cells[cell_order]
-            if torch.any(jitter > 0):
+            if bool(torch.any(jitter > 0).item()):
                 xy = xy + (torch.rand((n_particles, 2), device=gs.device) * 2.0 - 1.0) * jitter
             positions[env_idx, particle_order, :2] = xy
-            positions[env_idx, :, 2] = inner_min[2] + half_extents[:, 2] + min_gap
+            positions[env_idx, :, 2] = inner_min[2] + placement_half_extents[:, 2] + min_gap
 
         return positions
 
@@ -629,7 +644,15 @@ class SandboxManipulation:
         if not hasattr(particle.morph, "size") and not hasattr(particle.morph, "height"):
             return torch.tensor((1.0, 0.0, 0.0, 0.0), device=gs.device).repeat(n_envs, 1)
 
-        roll = torch.zeros(n_envs, device=gs.device)
+        if hasattr(particle.morph, "height") and hasattr(particle.morph, "radius"):
+            lying = torch.rand(n_envs, device=gs.device) < 0.5
+            roll = torch.where(
+                lying,
+                torch.full((n_envs,), math.pi / 2, device=gs.device),
+                torch.zeros(n_envs, device=gs.device),
+            )
+        else:
+            roll = torch.zeros(n_envs, device=gs.device)
         pitch = torch.zeros(n_envs, device=gs.device)
         yaw = torch.rand(n_envs, device=gs.device) * math.tau
 
