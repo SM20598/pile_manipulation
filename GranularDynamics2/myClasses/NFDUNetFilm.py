@@ -95,15 +95,6 @@ class NFDUNetFiLM(nn.Module):
     """
     NFD shallow U-Net dynamics model conditioned on material properties via FiLM.
 
-    Encoder/decoder channel widths follow Figure 7 of the paper (base=8):
-        enc1 :  3 →  8      dec3 : 64 → 16
-        enc2 :  8 → 16      dec2 : 32 →  8
-        enc3 : 16 → 32      dec1 : 16 →  4
-        bot  : 32 → 32      head :  4 →  1  (1×1 conv, no FiLM)
-
-    FiLM is applied at every ConvBlock (enc1–3, bottleneck, dec1–3),
-    i.e. 7 independent FiLMGenerators, each with its own γ/β MLP.
-
     Args:
         in_channels : input channels  (default 3: state + 2 rendered actions)
         out_channels: output channels (default 1: predicted next state)
