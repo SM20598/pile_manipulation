@@ -21,6 +21,7 @@ LR = 1e-3
 N_SAMPLES = 8
 DATA_FOLDERS = ["corl/cube/n20/size0.0085"]
 LOG_DIR = Path("runs/overfit")
+CHANGE_THRESHOLD = 1e-3
 
 
 def estimate_pos_weight(dataset: Dataset) -> torch.Tensor:
@@ -43,6 +44,11 @@ def evaluate(model, loader, criterion):
     total_mse = 0.0
     total_zero_mse = 0.0
     total_copy_mse = 0.0
+    changed_model_sse = 0.0
+    changed_zero_sse = 0.0
+    changed_copy_sse = 0.0
+    changed_pixels = 0
+    total_pixels = 0
     total_samples = 0
 
     with torch.no_grad():
@@ -54,12 +60,21 @@ def evaluate(model, loader, criterion):
 
             logits = model(inputs, physics).squeeze(1).float()
             probs = torch.sigmoid(logits)
+            current_state = inputs[:, 0]
+            changed_mask = (outputs - current_state).abs() > CHANGE_THRESHOLD
             batch_size = inputs.size(0)
+            batch_changed_pixels = changed_mask.sum().item()
 
             total_bce += criterion(logits, outputs).item() * batch_size
             total_mse += F.mse_loss(probs, outputs).item() * batch_size
             total_zero_mse += F.mse_loss(torch.zeros_like(outputs), outputs).item() * batch_size
-            total_copy_mse += F.mse_loss(inputs[:, 0], outputs).item() * batch_size
+            total_copy_mse += F.mse_loss(current_state, outputs).item() * batch_size
+            if batch_changed_pixels > 0:
+                changed_model_sse += ((probs - outputs).pow(2) * changed_mask).sum().item()
+                changed_zero_sse += outputs.pow(2).mul(changed_mask).sum().item()
+                changed_copy_sse += ((current_state - outputs).pow(2) * changed_mask).sum().item()
+                changed_pixels += batch_changed_pixels
+            total_pixels += changed_mask.numel()
             total_samples += batch_size
 
     return {
@@ -67,6 +82,10 @@ def evaluate(model, loader, criterion):
         "mse": total_mse / total_samples,
         "zero_mse": total_zero_mse / total_samples,
         "copy_mse": total_copy_mse / total_samples,
+        "changed_mse": changed_model_sse / changed_pixels if changed_pixels else 0.0,
+        "changed_zero_mse": changed_zero_sse / changed_pixels if changed_pixels else 0.0,
+        "changed_copy_mse": changed_copy_sse / changed_pixels if changed_pixels else 0.0,
+        "changed_pixel_frac": changed_pixels / total_pixels if total_pixels else 0.0,
     }
 
 
@@ -117,8 +136,12 @@ if __name__ == "__main__":
 
             writer.add_scalar("Loss/TrainBCE", avg_train_loss, epoch)
             writer.add_scalar("Metric/TrainProbMSE", metrics["mse"], epoch)
+            writer.add_scalar("Metric/TrainChangedMSE", metrics["changed_mse"], epoch)
+            writer.add_scalar("Metric/TrainChangedPixelFrac", metrics["changed_pixel_frac"], epoch)
             writer.add_scalar("Baseline/ZeroMSE", metrics["zero_mse"], epoch)
             writer.add_scalar("Baseline/CopyInputMSE", metrics["copy_mse"], epoch)
+            writer.add_scalar("Baseline/ChangedZeroMSE", metrics["changed_zero_mse"], epoch)
+            writer.add_scalar("Baseline/ChangedCopyInputMSE", metrics["changed_copy_mse"], epoch)
 
             tbar.set_postfix(
                 {
@@ -136,6 +159,9 @@ if __name__ == "__main__":
                     f"MSE={metrics['mse']:.6f}",
                     f"ZeroMSE={metrics['zero_mse']:.6f}",
                     f"CopyMSE={metrics['copy_mse']:.6f}",
+                    f"ChangedFrac={metrics['changed_pixel_frac']:.6f}",
+                    f"ChangedMSE={metrics['changed_mse']:.6f}",
+                    f"ChangedCopyMSE={metrics['changed_copy_mse']:.6f}",
                 )
 
     writer.close()
