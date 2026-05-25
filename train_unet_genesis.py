@@ -3,6 +3,7 @@
 #############################################################
 
 import argparse
+import re
 from pathlib import Path
 
 import torch
@@ -16,7 +17,7 @@ from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EPOCHS = 50
+EPOCHS = 70
 BATCH_SIZE = 64
 LR = 1e-4
 
@@ -26,10 +27,13 @@ MSE_WEIGHT = 1.0
 SHARPNESS_WEIGHT = 0.0
 TV_WEIGHT = 0.0
 MASS_WEIGHT = 0.2
+ADD_WEIGHT = 0.5
+REMOVE_WEIGHT = 0.5
 PATIENCE = 10
 CHANGE_THRESHOLD = 1e-3
 DEFAULT_DATA_FOLDERS = ["corl/cube"]
-DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_mass2")
+DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_mass2_addremove")
+RESUME_TRAINING = True
 
 
 def parse_args():
@@ -44,12 +48,47 @@ def parse_args():
    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
    parser.add_argument("--data-folders", nargs="+", default=DEFAULT_DATA_FOLDERS)
    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+   parser.add_argument("--epochs", type=int, default=EPOCHS, help="Total epoch budget, including resumed epochs.")
    parser.add_argument("--num-workers", type=int, default=4)
+   parser.add_argument("--fresh-start", action="store_true", help="Do not resume from an existing checkpoint.")
+   parser.add_argument("--resume-checkpoint", type=Path, default=None, help="Checkpoint to resume training from.")
+   parser.add_argument("--start-epoch", type=int, default=None, help="Epoch index already completed by the resume checkpoint.")
    parser.add_argument("--mse-weight", type=float, default=MSE_WEIGHT)
    parser.add_argument("--sharpness-weight", type=float, default=SHARPNESS_WEIGHT)
    parser.add_argument("--tv-weight", type=float, default=TV_WEIGHT)
    parser.add_argument("--mass-weight", type=float, default=MASS_WEIGHT)
+   parser.add_argument("--add-weight", type=float, default=ADD_WEIGHT)
+   parser.add_argument("--remove-weight", type=float, default=REMOVE_WEIGHT)
    return parser.parse_args()
+
+
+def checkpoint_epoch(path: Path) -> int | None:
+   match = re.search(r"epoch_(\d+)", path.stem)
+   return int(match.group(1)) if match else None
+
+
+def latest_epoch_checkpoint(log_dir: Path) -> Path | None:
+   checkpoints = []
+   for path in log_dir.glob("unet_epoch_*.pth"):
+      epoch = checkpoint_epoch(path)
+      if epoch is not None:
+         checkpoints.append((epoch, path))
+   if not checkpoints:
+      return None
+   return max(checkpoints, key=lambda item: item[0])[1]
+
+
+def default_resume_checkpoint(log_dir: Path) -> Path | None:
+   latest = latest_epoch_checkpoint(log_dir)
+   if latest is not None:
+      return latest
+   best = log_dir / "unet_best.pth"
+   if best.exists():
+      return best
+   final = log_dir / "unet.pth"
+   if final.exists():
+      return final
+   return None
 
 
 def augment_batch(inputs, outputs, physics):
@@ -74,8 +113,9 @@ def soft_dice_loss(logits, targets, eps=1e-6):
    return 1.0 - dice.mean()
 
 
-def combined_loss(logits, outputs, criterion):
+def combined_loss(logits, outputs, inputs, criterion):
    probs = torch.sigmoid(logits)
+   current_state = inputs[:, 0]
    bce = criterion(logits, outputs)
    dice = soft_dice_loss(logits, outputs)
    mse = F.mse_loss(probs, outputs)
@@ -84,6 +124,12 @@ def combined_loss(logits, outputs, criterion):
    tv_w = (probs[:, :, 1:] - probs[:, :, :-1]).abs().mean()
    tv = tv_h + tv_w
    mass = (probs.sum(dim=(1, 2)) - outputs.sum(dim=(1, 2))).abs().mean() / outputs[0].numel()
+   pred_add = (probs - current_state).clamp_min(0.0)
+   target_add = (outputs - current_state).clamp_min(0.0)
+   pred_remove = (current_state - probs).clamp_min(0.0)
+   target_remove = (current_state - outputs).clamp_min(0.0)
+   add_loss = F.mse_loss(pred_add, target_add)
+   remove_loss = F.mse_loss(pred_remove, target_remove)
    loss = (
       MSE_WEIGHT * mse
       + 0.0 * bce
@@ -91,11 +137,26 @@ def combined_loss(logits, outputs, criterion):
       + SHARPNESS_WEIGHT * sharpness
       + TV_WEIGHT * tv
       + MASS_WEIGHT * mass
+      + ADD_WEIGHT * add_loss
+      + REMOVE_WEIGHT * remove_loss
    )
-   return loss, bce, dice, sharpness, tv, mass
+   return loss, bce, dice, sharpness, tv, mass, add_loss, remove_loss
 
 
-def update_metric_totals(totals, logits, outputs, inputs, loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss):
+def update_metric_totals(
+   totals,
+   logits,
+   outputs,
+   inputs,
+   loss,
+   bce_loss,
+   dice_loss,
+   sharpness_loss,
+   tv_loss,
+   mass_loss,
+   add_loss,
+   remove_loss,
+):
    probs = torch.sigmoid(logits)
    current_state = inputs[:, 0]
    pred_mask = probs > 0.5
@@ -114,6 +175,8 @@ def update_metric_totals(totals, logits, outputs, inputs, loss, bce_loss, dice_l
    totals["sharpness_loss"] += sharpness_loss.item() * batch_size
    totals["tv_loss"] += tv_loss.item() * batch_size
    totals["mass_loss"] += mass_loss.item() * batch_size
+   totals["add_loss"] += add_loss.item() * batch_size
+   totals["remove_loss"] += remove_loss.item() * batch_size
    totals["prob_mse"] += F.mse_loss(probs, outputs).item() * batch_size
    totals["zero_mse"] += F.mse_loss(torch.zeros_like(outputs), outputs).item() * batch_size
    totals["copy_mse"] += F.mse_loss(current_state, outputs).item() * batch_size
@@ -150,6 +213,8 @@ def empty_totals():
       "sharpness_loss": 0.0,
       "tv_loss": 0.0,
       "mass_loss": 0.0,
+      "add_loss": 0.0,
+      "remove_loss": 0.0,
       "prob_mse": 0.0,
       "zero_mse": 0.0,
       "copy_mse": 0.0,
@@ -175,7 +240,7 @@ def evaluate_model(model, loader, criterion):
          outputs = outputs.to(DEVICE)
 
          logits = model(inputs, physics).squeeze(1).float()
-         loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss = combined_loss(logits, outputs, criterion)
+         loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(logits, outputs, inputs, criterion)
          update_metric_totals(
             totals,
             logits,
@@ -187,6 +252,8 @@ def evaluate_model(model, loader, criterion):
             sharpness_loss,
             tv_loss,
             mass_loss,
+            add_loss,
+            remove_loss,
          )
 
    return average_metrics(totals)
@@ -200,6 +267,8 @@ def print_test_metrics(test_metrics):
       f"Test SharpnessLoss: {test_metrics['sharpness_loss']:.6f}, "
       f"Test TVLoss: {test_metrics['tv_loss']:.6f}, "
       f"Test MassLoss: {test_metrics['mass_loss']:.6f}, "
+      f"Test AddLoss: {test_metrics['add_loss']:.6f}, "
+      f"Test RemoveLoss: {test_metrics['remove_loss']:.6f}, "
       f"Test MSE: {test_metrics['prob_mse']:.6f}, "
       f"Test IoU: {test_metrics['hard_iou']:.4f}, "
       f"Test Dice: {test_metrics['hard_dice']:.4f}, "
@@ -214,10 +283,13 @@ def print_test_metrics(test_metrics):
 
 if __name__ == "__main__":
    args = parse_args()
+   EPOCHS = args.epochs
    MSE_WEIGHT = args.mse_weight
    SHARPNESS_WEIGHT = args.sharpness_weight
    TV_WEIGHT = args.tv_weight
    MASS_WEIGHT = args.mass_weight
+   ADD_WEIGHT = args.add_weight
+   REMOVE_WEIGHT = args.remove_weight
    data_folders = args.data_folders
    log_dir = args.log_dir
    data_aug = True
@@ -247,9 +319,25 @@ if __name__ == "__main__":
       print_test_metrics(test_metrics)
       raise SystemExit(0)
 
+   start_epoch = 0
+   if RESUME_TRAINING and not args.fresh_start:
+      resume_checkpoint = args.resume_checkpoint or default_resume_checkpoint(log_dir)
+      if resume_checkpoint is not None:
+         state_dict = torch.load(resume_checkpoint, map_location=DEVICE)
+         model.load_state_dict(state_dict)
+         start_epoch = args.start_epoch if args.start_epoch is not None else (checkpoint_epoch(resume_checkpoint) or 0)
+         print(f"Resuming from {resume_checkpoint} at epoch {start_epoch}. Training to epoch {EPOCHS}.")
+      else:
+         print(f"No checkpoint found in {log_dir}; starting from scratch.")
+
    train_dataset: Dataset = PileSweepData(data_folders, split="train")
    val_dataset: Dataset = PileSweepData(data_folders, split="val")
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+   if start_epoch > 0:
+      resumed_lr = LR * (0.5 ** (start_epoch // 10))
+      for param_group in optimizer.param_groups:
+         param_group["lr"] = resumed_lr
+      print(f"Resumed optimizer learning rate: {resumed_lr:.8f}")
    writer = SummaryWriter(log_dir=log_dir)
    scaler = torch.amp.GradScaler(enabled=DEVICE == "cuda")
    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
@@ -260,11 +348,22 @@ if __name__ == "__main__":
    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=DEVICE == "cuda")
 
    best_val_loss = float("inf")
-   best_epoch = 0
+   best_epoch = start_epoch
    epochs_without_improvement = 0
    val_loss_history = []
    IMPROVEMENT_WINDOW = 5  # epochs over which to measure improvement rate
-   with trange(EPOCHS, desc="Training Epochs") as tbar:
+
+   if start_epoch > 0:
+      resume_val_metrics = evaluate_model(model, val_loader, criterion)
+      best_val_loss = resume_val_metrics["loss"]
+      val_loss_history.append(best_val_loss)
+      print(
+         f"Resume checkpoint val loss={best_val_loss:.6f}, "
+         f"val MSE={resume_val_metrics['prob_mse']:.6f}, "
+         f"val changed MSE={resume_val_metrics['changed_mse']:.6f}"
+      )
+
+   with trange(start_epoch, EPOCHS, desc="Training Epochs") as tbar:
       for epoch in tbar:
          model.train()
          train_totals = empty_totals()
@@ -282,7 +381,7 @@ if __name__ == "__main__":
 
             with torch.amp.autocast(device_type=DEVICE, dtype=torch.bfloat16):
                logits = model(inputs, physics).squeeze(1)
-               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss = combined_loss(logits.float(), outputs, criterion)
+               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(logits.float(), outputs, inputs, criterion)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -301,6 +400,8 @@ if __name__ == "__main__":
                sharpness_loss.detach(),
                tv_loss.detach(),
                mass_loss.detach(),
+               add_loss.detach(),
+               remove_loss.detach(),
             )
 
          train_metrics = average_metrics(train_totals)
@@ -315,7 +416,7 @@ if __name__ == "__main__":
                outputs = outputs.to(DEVICE)
 
                logits = model(inputs, physics).squeeze(1).float()
-               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss = combined_loss(logits, outputs, criterion)
+               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(logits, outputs, inputs, criterion)
                update_metric_totals(
                   val_totals,
                   logits,
@@ -327,6 +428,8 @@ if __name__ == "__main__":
                   sharpness_loss,
                   tv_loss,
                   mass_loss,
+                  add_loss,
+                  remove_loss,
                )
 
          val_metrics = average_metrics(val_totals)
@@ -369,6 +472,10 @@ if __name__ == "__main__":
          writer.add_scalar("Loss/ValTV", val_metrics["tv_loss"], epoch)
          writer.add_scalar("Loss/TrainMass", train_metrics["mass_loss"], epoch)
          writer.add_scalar("Loss/ValMass", val_metrics["mass_loss"], epoch)
+         writer.add_scalar("Loss/TrainAdd", train_metrics["add_loss"], epoch)
+         writer.add_scalar("Loss/ValAdd", val_metrics["add_loss"], epoch)
+         writer.add_scalar("Loss/TrainRemove", train_metrics["remove_loss"], epoch)
+         writer.add_scalar("Loss/ValRemove", val_metrics["remove_loss"], epoch)
          writer.add_scalar("Metric/TrainProbMSE", train_metrics["prob_mse"], epoch)
          writer.add_scalar("Metric/ValProbMSE", val_metrics["prob_mse"], epoch)
          writer.add_scalar("Metric/TrainChangedMSE", train_metrics["changed_mse"], epoch)
@@ -412,10 +519,12 @@ if __name__ == "__main__":
       save_path = log_dir / "unet.pth"
       torch.save(model.state_dict(), save_path)
 
-      epochs_run = len(val_loss_history)
+      resume_baseline_count = 1 if start_epoch > 0 else 0
+      epochs_run = len(val_loss_history) - resume_baseline_count
       print(
          f"\n=== Convergence summary ==="
-         f"\n  Epochs run:        {epochs_run} / {EPOCHS}"
+         f"\n  Epochs run:        {start_epoch + epochs_run} / {EPOCHS}"
+         f"\n  Resumed from:      {start_epoch}"
          f"\n  Best val loss:     {best_val_loss:.6f}  (epoch {best_epoch})"
          f"\n  Suggested budget:  {best_epoch + PATIENCE} epochs  "
          f"(best epoch + early-stop patience)"
