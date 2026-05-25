@@ -28,8 +28,8 @@ TV_WEIGHT = 0.0
 MASS_WEIGHT = 0.1
 PATIENCE = 10
 CHANGE_THRESHOLD = 1e-3
-DEFAULT_DATA_FOLDERS = ["corl"]
-DEFAULT_LOG_DIR = Path("runs/nfdunetfilm_mse_mass")
+DEFAULT_DATA_FOLDERS = ["corl/cubes"]
+DEFAULT_LOG_DIR = Path("cube_runs/nfu_mse_mass")
 
 
 def parse_args():
