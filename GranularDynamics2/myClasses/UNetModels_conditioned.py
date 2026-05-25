@@ -160,8 +160,10 @@ class UNetFiLM(nn.Module):
         c2 = torch.cat([u2, e1], dim=1)
         d2 = self.dec2(c2)
         d2 = self.apply_film(d2, *film_params['dec2'])
-        
-        return self.out(d2)
+
+        # residual: model predicts delta on top of current particle state (logit space)
+        current_state = x[:, 0:1, :, :]
+        return self.out(d2) + current_state
     
 #####################################
 # FiLM Conditioned FNC (from Paper) #
