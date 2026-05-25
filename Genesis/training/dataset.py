@@ -509,9 +509,9 @@ class PileSweepData(Dataset):
             target[mask] = float(drawing)
 
     def _det_physics(self, config):
-        self._physics[0] = config["material"]["friction"]
-        self._physics[1] = config["material"]["density"] / 5000.0
-        self._physics[2] = config["box"]["friction"]
+        self._physics[0] = (config["material"]["friction"] - 0.05) / (0.5  - 0.05)
+        self._physics[1] = (config["material"]["density"]  -  750) / (5000 -  750)
+        self._physics[2] = (config["box"]["friction"]      - 0.05) / (0.5  - 0.05)
         # self._physics[3] = config["plate"]["speed"]
 
     def __getitem__(self, idx: int):

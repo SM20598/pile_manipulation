@@ -27,7 +27,7 @@ MASS_WEIGHT = 0.1
 PATIENCE = 10
 CHANGE_THRESHOLD = 1e-3
 DEFAULT_DATA_FOLDERS = ["corl"]
-DEFAULT_LOG_DIR = Path("runs/nfdunetfilm_bce_dice_change")
+DEFAULT_LOG_DIR = Path("runs/nfdunetfilm_bce_dice_tunedmultiloss")
 
 
 def parse_args():
@@ -254,7 +254,10 @@ if __name__ == "__main__":
    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=DEVICE == "cuda")
 
    best_val_loss = float("inf")
+   best_epoch = 0
    epochs_without_improvement = 0
+   val_loss_history = []
+   IMPROVEMENT_WINDOW = 5  # epochs over which to measure improvement rate
    with trange(EPOCHS, desc="Training Epochs") as tbar:
       for epoch in tbar:
          model.train()
@@ -332,12 +335,21 @@ if __name__ == "__main__":
             f"val changed copy MSE={val_metrics['changed_copy_mse']:.6f}"
          )
 
+         val_loss_history.append(avg_val_loss)
          if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            best_epoch = epoch + 1
             epochs_without_improvement = 0
             torch.save(model.state_dict(), log_dir / "unet_best.pth")
          else:
             epochs_without_improvement += 1
+
+         # improvement rate over the last IMPROVEMENT_WINDOW epochs (positive = still improving)
+         if len(val_loss_history) >= IMPROVEMENT_WINDOW + 1:
+            improvement_rate = (val_loss_history[-IMPROVEMENT_WINDOW - 1] - val_loss_history[-1]) / IMPROVEMENT_WINDOW
+         else:
+            improvement_rate = float("nan")
+         train_val_gap = train_metrics["loss"] - val_metrics["loss"]
 
          writer.add_scalar("Loss/TrainCombined", train_metrics["loss"], epoch)
          writer.add_scalar("Loss/ValCombined", val_metrics["loss"], epoch)
@@ -364,13 +376,19 @@ if __name__ == "__main__":
          writer.add_scalar("Baseline/ValChangedZeroMSE", val_metrics["changed_zero_mse"], epoch)
          writer.add_scalar("Baseline/ValChangedCopyInputMSE", val_metrics["changed_copy_mse"], epoch)
          writer.add_scalar("LR", scheduler.get_last_lr()[0], epoch)
+         if not (improvement_rate != improvement_rate):  # not nan
+            writer.add_scalar("Convergence/ValImprovementRate", improvement_rate, epoch)
+         writer.add_scalar("Convergence/TrainValGap", train_val_gap, epoch)
+         writer.add_scalar("Convergence/BestEpoch", best_epoch, epoch)
+         writer.add_scalar("Convergence/EpochsWithoutImprovement", epochs_without_improvement, epoch)
 
          tbar.set_postfix(
             {
-               "Train Loss": train_metrics["loss"],
-               "Val Loss": val_metrics["loss"],
-               "Val MSE": val_metrics["prob_mse"],
-               "IoU": val_metrics["hard_iou"],
+               "Train Loss": f"{train_metrics['loss']:.4f}",
+               "Val Loss": f"{val_metrics['loss']:.4f}",
+               "IoU": f"{val_metrics['hard_iou']:.3f}",
+               "Best": best_epoch,
+               "No Improv": epochs_without_improvement,
             }
          )
 
@@ -387,6 +405,15 @@ if __name__ == "__main__":
       writer.close()
       save_path = log_dir / "unet.pth"
       torch.save(model.state_dict(), save_path)
+
+      epochs_run = len(val_loss_history)
+      print(
+         f"\n=== Convergence summary ==="
+         f"\n  Epochs run:        {epochs_run} / {EPOCHS}"
+         f"\n  Best val loss:     {best_val_loss:.6f}  (epoch {best_epoch})"
+         f"\n  Suggested budget:  {best_epoch + PATIENCE} epochs  "
+         f"(best epoch + early-stop patience)"
+      )
 
       model.eval()
       test_metrics = evaluate_model(model, test_loader, criterion)
