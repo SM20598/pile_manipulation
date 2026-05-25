@@ -8,7 +8,7 @@ import os
 import math
 import numpy as np
 import cv2
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation as R
 
 TO_PXL = 1e3
 
@@ -299,8 +299,25 @@ class PileSweepData(Dataset):
             dimensions = particle_sizes[idx]
             center_x = float(particle_state[0])
             center_y = float(particle_state[1])
+            upright_cylinder = False
 
-            if shape == "sphere":
+            if shape == "cylinder":
+                def cylinder_is_standing(quat):
+                    local_up = np.array([0, 0, 1])
+                    world_up = np.array([0, 0, 1])
+
+                    rot = R.from_quat(quat)
+                    
+                    rotated_axis = rot.apply(local_up)
+                
+                    alignment = abs(np.dot(rotated_axis, world_up))
+
+                    return alignment >= 0.5
+                
+                if cylinder_is_standing(particle_state[3:].numpy()):
+                    upright_cylinder = True
+
+            if shape == "sphere" or (upright_cylinder and shape=="cylinder"):
                 diameter, _, _ = dimensions
                 cv2.circle(
                     grid_np,
