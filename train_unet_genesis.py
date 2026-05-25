@@ -19,15 +19,17 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS = 50
 BATCH_SIZE = 64
 LR = 1e-4
+
 POS_WEIGHT = 20.0
-DICE_WEIGHT = 1
-SHARPNESS_WEIGHT = 0.05
-TV_WEIGHT = 0.01
+DICE_WEIGHT = 0
+MSE_WEIGHT = 1.0
+SHARPNESS_WEIGHT = 0.0
+TV_WEIGHT = 0.0
 MASS_WEIGHT = 0.1
 PATIENCE = 10
 CHANGE_THRESHOLD = 1e-3
 DEFAULT_DATA_FOLDERS = ["corl"]
-DEFAULT_LOG_DIR = Path("runs/nfdunetfilm_bce_dice_tunedmultiloss")
+DEFAULT_LOG_DIR = Path("runs/nfdunetfilm_mse_mass")
 
 
 def parse_args():
@@ -43,6 +45,7 @@ def parse_args():
    parser.add_argument("--data-folders", nargs="+", default=DEFAULT_DATA_FOLDERS)
    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
    parser.add_argument("--num-workers", type=int, default=4)
+   parser.add_argument("--mse-weight", type=float, default=MSE_WEIGHT)
    parser.add_argument("--sharpness-weight", type=float, default=SHARPNESS_WEIGHT)
    parser.add_argument("--tv-weight", type=float, default=TV_WEIGHT)
    parser.add_argument("--mass-weight", type=float, default=MASS_WEIGHT)
@@ -75,13 +78,15 @@ def combined_loss(logits, outputs, criterion):
    probs = torch.sigmoid(logits)
    bce = criterion(logits, outputs)
    dice = soft_dice_loss(logits, outputs)
+   mse = F.mse_loss(probs, outputs)
    sharpness = (probs * (1.0 - probs)).mean()
    tv_h = (probs[:, 1:, :] - probs[:, :-1, :]).abs().mean()
    tv_w = (probs[:, :, 1:] - probs[:, :, :-1]).abs().mean()
    tv = tv_h + tv_w
    mass = (probs.sum(dim=(1, 2)) - outputs.sum(dim=(1, 2))).abs().mean() / outputs[0].numel()
    loss = (
-      bce
+      MSE_WEIGHT * mse
+      + 0.0 * bce
       + DICE_WEIGHT * dice
       + SHARPNESS_WEIGHT * sharpness
       + TV_WEIGHT * tv
@@ -209,6 +214,7 @@ def print_test_metrics(test_metrics):
 
 if __name__ == "__main__":
    args = parse_args()
+   MSE_WEIGHT = args.mse_weight
    SHARPNESS_WEIGHT = args.sharpness_weight
    TV_WEIGHT = args.tv_weight
    MASS_WEIGHT = args.mass_weight
