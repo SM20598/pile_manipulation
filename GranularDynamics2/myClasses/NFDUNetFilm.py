@@ -114,9 +114,9 @@ class NFDUNetFiLM(nn.Module):
 
     def __init__(
         self,
-        in_channels:  int = 3,
+        in_channels:  int = 2,
         out_channels: int = 1,
-        cond_dim:     int = 4,    # e.g. [friction, obj_size, pusher_width, density]
+        cond_dim:     int = 3,    # e.g. [friction, obj_size, pusher_width, density]
         base:         int = 8,
         film_hidden:  int = 64,
     ):
@@ -149,22 +149,18 @@ class NFDUNetFiLM(nn.Module):
 
     def forward(
         self,
-        state:  torch.Tensor,
-        action: torch.Tensor,
+        x:  torch.Tensor,
         props:  torch.Tensor,
     ) -> torch.Tensor:
         """
         Args:
-            state  : (B, 1, H, W)        current density-field state s_t
-            action : (B, 2, H, W)        stacked rendered pusher images
-                                          [r(x_t), r(x_{t+1})]
+            x      : (B, in_channels, H, W)  input tensor
             props  : (B, cond_dim)        material/object property vector z
                                           e.g. [friction, obj_size,
                                                 pusher_width, density]
         Returns:
             pred   : (B, 1, H, W)        predicted next state ŝ_{t+1}
         """
-        x = torch.cat([state, action], dim=1)       # (B, 3, H, W)
 
         # Encoder
         s1 = self.enc1(x,             props)        # (B, b,   H,   W  )

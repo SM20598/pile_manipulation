@@ -1,54 +1,195 @@
+import argparse
+import os
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
+
 from Genesis.training.dataset import PileSweepData
-from GranularDynamics2.myClasses.UNetModels_conditioned import UNetConditioned
-            
-            
-def plot_grids_4x4(input, action, ground_truth, prediction) -> None:
-        """Visualize the grid as an image"""
-        from matplotlib import pyplot as plt
-        
-        fig, axs = plt.subplots(2, 2, figsize=(10, 10))
-        axs[0, 0].imshow(input.cpu().numpy(), interpolation='nearest')
-        axs[0, 0].set_title("Input State")
-        axs[0, 1].imshow(action.cpu().numpy(), interpolation='nearest')
-        axs[0, 1].set_title("Action")
-        axs[1, 0].imshow(ground_truth.cpu().numpy(), interpolation='nearest')
-        axs[1, 0].set_title("Ground Truth")
-        axs[1, 1].imshow(prediction.cpu().numpy(), interpolation='nearest')
-        axs[1, 1].set_title("Model Prediction")
-        plt.tight_layout()
+from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
+
+
+def plot_prediction(
+    input_grid,
+    action_grid,
+    ground_truth,
+    prediction,
+    sample_idx,
+    mse,
+    copy_mse,
+    save_dir,
+    show,
+):
+    """Show the model input, target, prediction, and signed error for one sample."""
+    error = prediction - ground_truth
+
+    fig, axs = plt.subplots(2, 3, figsize=(13, 8), constrained_layout=True)
+    fig.suptitle(
+        f"Test sample {sample_idx} | model MSE={mse:.6f} | copy-input MSE={copy_mse:.6f}"
+    )
+
+    images = [
+        (input_grid, "Input particles", "gray", 0.0, 1.0),
+        (action_grid, "Sweep action", "magma", 0.0, 1.0),
+        (ground_truth, "Ground truth", "gray", 0.0, 1.0),
+        (prediction, "Prediction", "viridis", None, None),
+        (error, "Prediction - ground truth", "coolwarm", -1.0, 1.0),
+        (prediction.clamp(0.0, 1.0), "Prediction clamped [0, 1]", "gray", 0.0, 1.0),
+    ]
+
+    for ax, (grid, title, cmap, vmin, vmax) in zip(axs.flat, images):
+        im = ax.imshow(
+            grid.detach().cpu().numpy(),
+            interpolation="nearest",
+            origin="lower",
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+        )
+        ax.set_title(title)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    output_path = None
+    if save_dir is not None:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        output_path = save_dir / f"test_sample_{sample_idx:06d}.png"
+        fig.savefig(output_path, dpi=150)
+
+    if show:
         plt.show()
+    else:
+        plt.close(fig)
+
+    return output_path
+
+
+def load_model(checkpoint_path, device):
+    model = NFDUNetFiLM().to(device)
+    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
+
+
+def inspect_test_set(args):
+    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+
+    dataset = PileSweepData(args.data_folders, split="test")
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=device == "cuda",
+    )
+
+    model = load_model(args.checkpoint, device)
+
+    total_model_loss = 0.0
+    total_zero_loss = 0.0
+    total_copy_loss = 0.0
+    total_iou = 0.0
+    total_dice = 0.0
+    num_samples = 0
+    plotted = 0
+
+    with torch.no_grad():
+        for inputs_, outputs in loader:
+            inputs, physics = inputs_
+            inputs = inputs.to(device)
+            physics = physics.to(device)
+            outputs = outputs.to(device)
+
+            logits = model(inputs, physics).squeeze(1).float()
+            predictions = torch.sigmoid(logits)
+            pred_mask = predictions > 0.5
+            target_mask = outputs > 0.5
+            intersection = (pred_mask & target_mask).sum(dim=(1, 2)).float()
+            pred_area = pred_mask.sum(dim=(1, 2)).float()
+            target_area = target_mask.sum(dim=(1, 2)).float()
+            union = pred_area + target_area - intersection
+            batch_model_loss = F.mse_loss(predictions, outputs, reduction="none").mean(dim=(1, 2))
+            batch_zero_loss = F.mse_loss(torch.zeros_like(outputs), outputs, reduction="none").mean(dim=(1, 2))
+            batch_copy_loss = F.mse_loss(inputs[:, 0], outputs, reduction="none").mean(dim=(1, 2))
+            batch_iou = (intersection + 1e-6) / (union + 1e-6)
+            batch_dice = (2.0 * intersection + 1e-6) / (pred_area + target_area + 1e-6)
+
+            batch_size = inputs.size(0)
+            total_model_loss += batch_model_loss.sum().item()
+            total_zero_loss += batch_zero_loss.sum().item()
+            total_copy_loss += batch_copy_loss.sum().item()
+            total_iou += batch_iou.sum().item()
+            total_dice += batch_dice.sum().item()
+
+            for i in range(batch_size):
+                sample_idx = num_samples + i
+                if sample_idx < args.start:
+                    continue
+                if plotted >= args.num_plots:
+                    continue
+
+                plot_prediction(
+                    inputs[i, 0],
+                    inputs[i, 1],
+                    outputs[i],
+                    predictions[i],
+                    sample_idx,
+                    batch_model_loss[i].item(),
+                    batch_copy_loss[i].item(),
+                    args.save_dir,
+                    args.show,
+                )
+                plotted += 1
+
+            num_samples += batch_size
+
+    print(f"Test samples: {num_samples}")
+    print(f"Model MSE:      {total_model_loss / num_samples:.6f}")
+    print(f"All-zero MSE:   {total_zero_loss / num_samples:.6f}")
+    print(f"Copy input MSE: {total_copy_loss / num_samples:.6f}")
+    print(f"Hard IoU @0.5:  {total_iou / num_samples:.4f}")
+    print(f"Hard Dice @0.5: {total_dice / num_samples:.4f}")
+    if args.save_dir is not None and plotted > 0:
+        print(f"Saved plots to: {args.save_dir}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Inspect NFDUNetFiLM predictions on the Genesis test split.")
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path("runs/nfdunetfilm_bce_dice/unet_best.pth"),
+        help="Path to the trained NFDUNetFiLM state dict.",
+    )
+    parser.add_argument(
+        "--data-folders",
+        nargs="+",
+        default=["corl"],
+        help="Dataset folders under Genesis/data.",
+    )
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-plots", type=int, default=8)
+    parser.add_argument("--start", type=int, default=0, help="First test-set sample index to plot.")
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=Path("runs/nfdunetfilm_bce_dice/test_plots"),
+        help="Directory for saved inspection PNGs. Use --save-dir '' to disable saving.",
+    )
+    parser.add_argument("--show", action="store_true", help="Also call plt.show() for interactive backends.")
+    parser.add_argument("--cpu", action="store_true", help="Force CPU inference.")
+    args = parser.parse_args()
+    if args.save_dir == Path(""):
+        args.save_dir = None
+    return args
+
 
 if __name__ == "__main__":
-    # Example usage
-    from Genesis.training.dataset import PileSweepData
-    model = UNetConditioned()
-    model.load_state_dict(torch.load("runs/unetfilm/unet.pth", weights_only=True))
-    model.eval()
-    data_folders = ["chickpeas/chickspheres_on_glass", "chickpeas/chickspheres_on_wood"]
-    dataset = PileSweepData(data_folders)
-   
-    # DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    # model.to(DEVICE)
-   
-    n_samples = len(dataset)
-    test_data = torch.utils.data.Subset(dataset, range(int(0.9 * n_samples), n_samples))
-    test_loader = DataLoader(
-        test_data,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
-    with torch.no_grad():
-        for inputs_, outputs in test_loader:
-            inputs, physics = inputs_
-            
-            # inputs = inputs.to(DEVICE)
-            # physics = physics.to(DEVICE)
-            # outputs = outputs.to(DEVICE)
-            
-            pred_next = model(inputs, physics)
-
-            plot_grids_4x4(inputs[0][0], inputs[0][1], outputs[0], pred_next[0][0])
+    inspect_test_set(parse_args())
