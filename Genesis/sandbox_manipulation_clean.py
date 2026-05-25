@@ -56,7 +56,7 @@ class SandboxManipulation:
         self._wall_thickness = self._box_params.get('wall_thickness', 0.02)
         self._granular_vol = self._material_params.get('vol', [0.27, 0.27, 0.1])
         
-        self._settle_steps = 100
+        self._settle_steps = 200
         self._goal_threshold = 0.001
         
         self._debug = debug
