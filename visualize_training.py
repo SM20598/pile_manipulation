@@ -138,7 +138,7 @@ def inspect_test_set(args):
                     inputs[i, 0],
                     inputs[i, 1],
                     outputs[i],
-                    predictions[i],
+                    torch.where(pred_mask[i], predictions[i], torch.zeros_like(predictions[i])),
                     sample_idx,
                     batch_model_loss[i].item(),
                     batch_copy_loss[i].item(),
