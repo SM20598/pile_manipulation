@@ -55,11 +55,13 @@ def random_sequential_addition(
 
     particle_dimensions = [get_particle_dimensions(i)[0] for i in range(num_particles)]
     half_extents = np.asarray(particle_dimensions, dtype=float) * 0.5
-    max_half_xy = np.max(half_extents[:, :2], axis=0)
+    placement_half_extents = half_extents.copy()
+    if shape == "cylinder":
+        placement_half_extents[:] = np.max(half_extents, axis=1, keepdims=True)
     floor_z = wall_thickness / 2.0
 
-    lower_xy = np.array([-width / 2, -depth / 2], dtype=float) + half_extents[:, :2]
-    upper_xy = np.array([width / 2, depth / 2], dtype=float) - half_extents[:, :2]
+    lower_xy = np.array([-width / 2, -depth / 2], dtype=float) + placement_half_extents[:, :2]
+    upper_xy = np.array([width / 2, depth / 2], dtype=float) - placement_half_extents[:, :2]
     if np.any(upper_xy < lower_xy):
         raise ValueError("At least one particle is too large to fit inside the granular volume.")
 
@@ -75,13 +77,13 @@ def random_sequential_addition(
             if placed:
                 placed_idx = np.asarray(placed, dtype=int)
                 delta = np.abs(xy - positions[placed_idx, :2])
-                min_sep = half_extents[particle_idx, :2] + half_extents[placed_idx, :2] + min_gap
+                min_sep = placement_half_extents[particle_idx, :2] + placement_half_extents[placed_idx, :2] + min_gap
                 if not np.all(np.any(delta >= min_sep, axis=1)):
                     continue
             positions[particle_idx] = (
                 xy[0],
                 xy[1],
-                floor_z + half_extents[particle_idx, 2] + min_gap,
+                floor_z + placement_half_extents[particle_idx, 2] + min_gap,
             )
             placed.append(particle_idx)
             placed_particle = True
@@ -96,6 +98,11 @@ def random_sequential_addition(
     def random_euler():
         if shape == "sphere":
             return None
+        if shape == "cylinder":
+            yaw = float(np.random.uniform(0.0, 360.0))
+            if np.random.random() < 0.5:
+                return (0.0, 0.0, yaw)
+            return (90.0, 0.0, yaw)
         return (0.0, 0.0, float(np.random.uniform(0.0, 360.0)))
 
     entities = []
