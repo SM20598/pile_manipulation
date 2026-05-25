@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from Genesis.training.dataset import PileSweepData
-from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
+from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM, NFDUNetFiLMShallow
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -29,8 +29,8 @@ def model_name(path: Path) -> str:
     return path.parent.name if path.is_file() else path.name
 
 
-def load_model(checkpoint: Path) -> NFDUNetFiLM:
-    model = NFDUNetFiLM().to(DEVICE)
+def load_model(checkpoint: Path, model_variant: str):
+    model = (NFDUNetFiLMShallow() if model_variant in ("shallow", "shallow-lowres") else NFDUNetFiLM()).to(DEVICE)
     try:
         state_dict = torch.load(checkpoint, map_location=DEVICE, weights_only=True)
     except TypeError:
@@ -40,11 +40,11 @@ def load_model(checkpoint: Path) -> NFDUNetFiLM:
     return model
 
 
-def projection_cache(height: int, width: int, n_projections: int, device: str):
+def projection_cache(height: int, width: int, n_projections: int, device: str, resolution_scale: float):
     ys = torch.arange(height, dtype=torch.float32, device=device)
     xs = torch.arange(width, dtype=torch.float32, device=device)
     yy, xx = torch.meshgrid(ys, xs, indexing="ij")
-    coords = torch.stack((xx.reshape(-1), yy.reshape(-1)), dim=1)
+    coords = torch.stack((xx.reshape(-1), yy.reshape(-1)), dim=1) / resolution_scale
 
     angles = torch.linspace(0.0, torch.pi, n_projections + 1, device=device)[:-1]
     directions = torch.stack((torch.cos(angles), torch.sin(angles)), dim=1)
@@ -129,7 +129,7 @@ def update_standard_metrics(totals, probs, outputs, current_state):
     return changed_mask
 
 
-def evaluate_checkpoint(model, loader, n_projections: int, max_batches: int | None = None):
+def evaluate_checkpoint(model, loader, n_projections: int, resolution_scale: float, max_batches: int | None = None):
     totals = empty_totals()
     order = None
     deltas = None
@@ -148,7 +148,13 @@ def evaluate_checkpoint(model, loader, n_projections: int, max_batches: int | No
             probs = torch.sigmoid(logits)
 
             if order is None:
-                order, deltas = projection_cache(outputs.shape[-2], outputs.shape[-1], n_projections, DEVICE)
+                order, deltas = projection_cache(
+                    outputs.shape[-2],
+                    outputs.shape[-1],
+                    n_projections,
+                    DEVICE,
+                    resolution_scale,
+                )
 
             changed_mask = update_standard_metrics(totals, probs, outputs, current_state)
 
@@ -217,6 +223,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Compare trained occupancy models with sliced Wasserstein metrics.")
     parser.add_argument("models", nargs="+", type=Path, help="Run directories or checkpoint files.")
     parser.add_argument("--data-folders", nargs="+", default=["corl/cube"])
+    parser.add_argument(
+        "--model-variant",
+        choices=["full", "shallow", "lowres", "shallow-lowres"],
+        default="full",
+    )
+    parser.add_argument(
+        "--resolution-scale",
+        type=float,
+        default=None,
+        help="Defaults to 0.25 for lowres variants and 1.0 otherwise.",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--n-projections", type=int, default=64)
@@ -226,7 +243,12 @@ def parse_args():
 
 def main():
     args = parse_args()
-    dataset = PileSweepData(args.data_folders, split="test")
+    resolution_scale = (
+        args.resolution_scale
+        if args.resolution_scale is not None
+        else (0.25 if args.model_variant in ("lowres", "shallow-lowres") else 1.0)
+    )
+    dataset = PileSweepData(args.data_folders, split="test", resolution_scale=resolution_scale)
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -239,8 +261,8 @@ def main():
     for model_path in args.models:
         checkpoint = resolve_checkpoint(model_path)
         print(f"Evaluating {model_name(model_path)} from {checkpoint}", flush=True)
-        model = load_model(checkpoint)
-        metrics = evaluate_checkpoint(model, loader, args.n_projections, args.max_batches)
+        model = load_model(checkpoint, args.model_variant)
+        metrics = evaluate_checkpoint(model, loader, args.n_projections, resolution_scale, args.max_batches)
         results.append((model_name(model_path), metrics))
 
     print_results(results)

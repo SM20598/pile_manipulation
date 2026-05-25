@@ -22,6 +22,7 @@ class PileSweepData(Dataset):
             split: str | None = None,
             val_pct: int = 5,
             test_pct: int = 5,
+            resolution_scale: float = 1.0,
         ):
         """
         Initialize dataset with either a folder containing data or a specific run.
@@ -39,11 +40,15 @@ class PileSweepData(Dataset):
         assert split in (None, "train", "val", "test"), f"Invalid split: {split!r}"
         if val_pct < 0 or test_pct < 0 or val_pct + test_pct >= 100:
             raise ValueError("val_pct and test_pct must be non-negative and sum to less than 100.")
+        if resolution_scale <= 0:
+            raise ValueError("resolution_scale must be positive.")
         self.runs = []
         self.configs = []
         self._run_lengths = []
         self._plate_cache = {}
         self._physics = torch.zeros((3,), dtype=torch.float32)
+        self.resolution_scale = float(resolution_scale)
+        self.to_pxl = TO_PXL * self.resolution_scale
 
 
         parentpath = Path(__file__).parent.parent
@@ -99,7 +104,8 @@ class PileSweepData(Dataset):
 
         # Box grid, dimension, and center
         x_dim, y_dim, _ = config["box"]["vol"]
-        x_pxl, y_pxl = int(x_dim * TO_PXL), int(y_dim * TO_PXL)
+        x_pxl = max(1, int(round(x_dim * self.to_pxl)))
+        y_pxl = max(1, int(round(y_dim * self.to_pxl)))
         self.ctr_in_PXL = torch.tensor((round(x_pxl / 2), round(y_pxl / 2), 0))
 
         self._input_grid = torch.zeros((2, x_pxl, y_pxl), dtype=torch.float32)
@@ -255,10 +261,10 @@ class PileSweepData(Dataset):
         particles = run["states"][index].clone()
         particles_ = run["states_"][index].clone()
 
-        particles[:, :3] = particles[:, :3] * TO_PXL + self.ctr_in_PXL
-        particles_[:, :3] = particles_[:, :3] * TO_PXL + self.ctr_in_PXL
-        plate_pos = run["p_starts"][index] * TO_PXL + self.ctr_in_PXL
-        plate_pos_ = run["p_stops"][index] * TO_PXL + self.ctr_in_PXL
+        particles[:, :3] = particles[:, :3] * self.to_pxl + self.ctr_in_PXL
+        particles_[:, :3] = particles_[:, :3] * self.to_pxl + self.ctr_in_PXL
+        plate_pos = run["p_starts"][index] * self.to_pxl + self.ctr_in_PXL
+        plate_pos_ = run["p_stops"][index] * self.to_pxl + self.ctr_in_PXL
         angle = run["angles"][index]
 
         return particles, particles_, plate_pos, plate_pos_, angle
@@ -299,7 +305,7 @@ class PileSweepData(Dataset):
                 cv2.circle(
                     grid_np,
                     (int(round(center_x)), int(round(center_y))),
-                    int(round(diameter * TO_PXL * 0.5)),
+                    max(1, int(round(diameter * self.to_pxl * 0.5))),
                     color=1,
                     thickness=-1,
                 )
@@ -308,18 +314,18 @@ class PileSweepData(Dataset):
             draw_box_points(
                 grid_np,
                 (center_x, center_y),
-                (float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL),
+                (float(dimensions[0]) * self.to_pxl, float(dimensions[1]) * self.to_pxl),
                 quaternion_to_yaw(particle_state[3:]),
                 1
             )
     
     def _draw_plate(self, start_pos, end_pos, angle, config, binary=False):
         plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
-        plate_dim_x *= TO_PXL
-        plate_dim_y *= TO_PXL
+        plate_dim_x *= self.to_pxl
+        plate_dim_y *= self.to_pxl
 
         if not binary:
-            def differentiable_rectangle_occupancy(pos, theta, rect_w, rect_h, sigma=1.5):
+            def differentiable_rectangle_occupancy(pos, theta, rect_w, rect_h, sigma=None):
                 """
                 Creates a differentiable soft occupancy grid for a rotated rectangle.
 
@@ -333,6 +339,8 @@ class PileSweepData(Dataset):
                 Returns:
                     occupancy  : [H, W] tensor with values in [0,1]
                 """
+                if sigma is None:
+                    sigma = max(0.5, 1.5 * self.resolution_scale)
                 _, H, W = self._input_grid.shape
                 cx, cy = pos[:2]
                 # Create coordinate grid

@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 
 from Genesis.training.dataset import PileSweepData
-from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
+from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM, NFDUNetFiLMShallow
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -34,6 +34,8 @@ CHANGE_THRESHOLD = 1e-3
 DEFAULT_DATA_FOLDERS = ["corl/cube"]
 DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_mass2_addremove")
 RESUME_TRAINING = True
+MODEL_VARIANT = "full"
+LOWRES_SCALE = 0.25
 
 
 def parse_args():
@@ -53,6 +55,18 @@ def parse_args():
    parser.add_argument("--fresh-start", action="store_true", help="Do not resume from an existing checkpoint.")
    parser.add_argument("--resume-checkpoint", type=Path, default=None, help="Checkpoint to resume training from.")
    parser.add_argument("--start-epoch", type=int, default=None, help="Epoch index already completed by the resume checkpoint.")
+   parser.add_argument(
+      "--model-variant",
+      choices=["full", "shallow", "lowres", "shallow-lowres"],
+      default=MODEL_VARIANT,
+      help="Architecture/resolution variant to train.",
+   )
+   parser.add_argument(
+      "--resolution-scale",
+      type=float,
+      default=None,
+      help="Override dataset render scale. Lowres variants default to 0.25; others default to 1.0.",
+   )
    parser.add_argument("--mse-weight", type=float, default=MSE_WEIGHT)
    parser.add_argument("--sharpness-weight", type=float, default=SHARPNESS_WEIGHT)
    parser.add_argument("--tv-weight", type=float, default=TV_WEIGHT)
@@ -89,6 +103,16 @@ def default_resume_checkpoint(log_dir: Path) -> Path | None:
    if final.exists():
       return final
    return None
+
+
+def build_model(model_variant: str):
+   if model_variant in ("shallow", "shallow-lowres"):
+      return NFDUNetFiLMShallow().to(DEVICE)
+   return NFDUNetFiLM().to(DEVICE)
+
+
+def default_resolution_scale(model_variant: str) -> float:
+   return LOWRES_SCALE if model_variant in ("lowres", "shallow-lowres") else 1.0
 
 
 def augment_batch(inputs, outputs, physics):
@@ -291,13 +315,24 @@ if __name__ == "__main__":
    ADD_WEIGHT = args.add_weight
    REMOVE_WEIGHT = args.remove_weight
    data_folders = args.data_folders
+   resolution_scale = (
+      args.resolution_scale
+      if args.resolution_scale is not None
+      else default_resolution_scale(args.model_variant)
+   )
    log_dir = args.log_dir
+   if log_dir == DEFAULT_LOG_DIR and args.model_variant != MODEL_VARIANT:
+      log_dir = log_dir.with_name(f"{log_dir.name}_{args.model_variant}")
    data_aug = True
    log_dir.mkdir(parents=True, exist_ok=True)
 
-   test_dataset: Dataset = PileSweepData(data_folders, split="test")
+   print(f"Model variant: {args.model_variant}")
+   print(f"Resolution scale: {resolution_scale}")
+   print(f"Log dir: {log_dir}")
 
-   model = NFDUNetFiLM().to(DEVICE)
+   test_dataset: Dataset = PileSweepData(data_folders, split="test", resolution_scale=resolution_scale)
+
+   model = build_model(args.model_variant)
 
    pos_weight = torch.tensor([POS_WEIGHT], device=DEVICE)
    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -330,8 +365,8 @@ if __name__ == "__main__":
       else:
          print(f"No checkpoint found in {log_dir}; starting from scratch.")
 
-   train_dataset: Dataset = PileSweepData(data_folders, split="train")
-   val_dataset: Dataset = PileSweepData(data_folders, split="val")
+   train_dataset: Dataset = PileSweepData(data_folders, split="train", resolution_scale=resolution_scale)
+   val_dataset: Dataset = PileSweepData(data_folders, split="val", resolution_scale=resolution_scale)
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    if start_epoch > 0:
       resumed_lr = LR * (0.5 ** (start_epoch // 10))

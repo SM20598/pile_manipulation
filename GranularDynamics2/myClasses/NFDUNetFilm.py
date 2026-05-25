@@ -177,3 +177,51 @@ class NFDUNetFiLM(nn.Module):
 
         current_state = x[:, 0:1, :, :]
         return self.head(d1) + current_state                       # (B, 1, H, W)
+
+
+class NFDUNetFiLMShallow(nn.Module):
+    """
+    Less-deep FiLM U-Net variant.
+
+    Keeps the same input/output resolution and residual current-state skip, but
+    removes the deepest encoder/decoder stage. This gives two pooling levels
+    instead of three.
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 2,
+        out_channels: int = 1,
+        cond_dim: int = 3,
+        base: int = 8,
+        film_hidden: int = 64,
+    ):
+        super().__init__()
+        b = base
+        kw = dict(cond_dim=cond_dim, hidden=film_hidden)
+
+        self.enc1 = FiLMConvBlock(in_channels, b, **kw)
+        self.enc2 = FiLMConvBlock(b, b * 2, **kw)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.bottleneck = FiLMConvBlock(b * 2, b * 2, **kw)
+
+        self.up2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        self.dec2 = FiLMConvBlock(b * 2 + b * 2, b, **kw)
+
+        self.up1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        self.dec1 = FiLMConvBlock(b + b, b // 2, **kw)
+
+        self.head = nn.Conv2d(b // 2, out_channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor, props: torch.Tensor) -> torch.Tensor:
+        s1 = self.enc1(x, props)
+        s2 = self.enc2(self.pool(s1), props)
+
+        b_feat = self.bottleneck(self.pool(s2), props)
+
+        d2 = self.dec2(torch.cat([self.up2(b_feat), s2], dim=1), props)
+        d1 = self.dec1(torch.cat([self.up1(d2), s1], dim=1), props)
+
+        current_state = x[:, 0:1, :, :]
+        return self.head(d1) + current_state
