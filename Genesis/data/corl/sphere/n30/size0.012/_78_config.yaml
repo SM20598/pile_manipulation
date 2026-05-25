@@ -165,6 +165,6 @@ simulation:
   substeps: 5
 statistics:
   n_envs: 10
-  number_of_failed_samples: 7
+  number_of_failed_samples: 6
   samples_per_env: 2
-  total_samples_collected: 13
+  total_samples_collected: 14

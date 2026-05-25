@@ -10,6 +10,27 @@ data_collection:
   n_envs: 10
   sampled:
     box_friction: 0.35
+    density:
+    - 4142.5908203125
+    - 3846.633544921875
+    - 4308.9560546875
+    - 3298.187255859375
+    - 4537.53564453125
+    - 4489.89111328125
+    - 4347.0048828125
+    - 3347.460205078125
+    - 4112.0986328125
+    - 4574.56005859375
+    - 3607.148681640625
+    - 3716.546142578125
+    - 3194.7021484375
+    - 3513.875
+    - 3804.697998046875
+    - 4668.4775390625
+    - 3826.213134765625
+    - 3615.740478515625
+    - 3390.467041015625
+    - 4477.01123046875
     particle_sizes:
     - !!python/tuple
       - 0.012
@@ -125,6 +146,6 @@ simulation:
   substeps: 5
 statistics:
   n_envs: 10
-  number_of_failed_samples: 3
+  number_of_failed_samples: 4
   samples_per_env: 2
-  total_samples_collected: 17
+  total_samples_collected: 16

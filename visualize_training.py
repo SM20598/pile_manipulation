@@ -161,28 +161,13 @@ def inspect_test_set(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inspect NFDUNetFiLM predictions on the Genesis test split.")
-    parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        default=Path("runs/nfdunetfilm_bce_dice/unet_best.pth"),
-        help="Path to the trained NFDUNetFiLM state dict.",
-    )
-    parser.add_argument(
-        "--data-folders",
-        nargs="+",
-        default=["corl"],
-        help="Dataset folders under Genesis/data.",
-    )
+    parser.add_argument("--checkpoint", type=Path, default=Path("runs/nfdunetfilm_bce_dice/unet_best.pth"), help="Path to the trained NFDUNetFiLM state dict.",)
+    parser.add_argument("--data-folders", nargs="+", default=["corl"], help="Dataset folders under Genesis/data.",)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--num-plots", type=int, default=8)
     parser.add_argument("--start", type=int, default=0, help="First test-set sample index to plot.")
-    parser.add_argument(
-        "--save-dir",
-        type=Path,
-        default=Path("runs/nfdunetfilm_bce_dice/test_plots"),
-        help="Directory for saved inspection PNGs. Use --save-dir '' to disable saving.",
-    )
+    parser.add_argument("--save-dir", type=Path, default=Path("runs/nfdunetfilm_bce_dice/test_plots"), help="Directory for saved inspection PNGs. Use --save-dir '' to disable saving.",)
     parser.add_argument("--show", action="store_true", help="Also call plt.show() for interactive backends.")
     parser.add_argument("--cpu", action="store_true", help="Force CPU inference.")
     args = parser.parse_args()

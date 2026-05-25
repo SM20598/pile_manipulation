@@ -1,0 +1,101 @@
+box:
+  friction: 0.05
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  goal_threshold: 0.001
+  n_envs: 10
+  sampled:
+    box_friction: 0.05
+    particle_size:
+    - 0.009477323299529074
+    - 0.00873476629308047
+    - 0.009091059203757157
+    - 0.010969179794583107
+    - 0.009730717845810954
+    - 0.010753222901860282
+    - 0.011078369872867472
+    - 0.011748042649281566
+    - 0.012125715545984801
+    - 0.008579019579064286
+    particle_sizes:
+    - !!python/tuple
+      - 0.009477323299529074
+      - 0.009477323299529074
+      - 0.009477323299529074
+    - !!python/tuple
+      - 0.00873476629308047
+      - 0.00873476629308047
+      - 0.00873476629308047
+    - !!python/tuple
+      - 0.009091059203757157
+      - 0.009091059203757157
+      - 0.009091059203757157
+    - !!python/tuple
+      - 0.010969179794583107
+      - 0.010969179794583107
+      - 0.010969179794583107
+    - !!python/tuple
+      - 0.009730717845810954
+      - 0.009730717845810954
+      - 0.009730717845810954
+    - !!python/tuple
+      - 0.010753222901860282
+      - 0.010753222901860282
+      - 0.010753222901860282
+    - !!python/tuple
+      - 0.011078369872867472
+      - 0.011078369872867472
+      - 0.011078369872867472
+    - !!python/tuple
+      - 0.011748042649281566
+      - 0.011748042649281566
+      - 0.011748042649281566
+    - !!python/tuple
+      - 0.012125715545984801
+      - 0.012125715545984801
+      - 0.012125715545984801
+    - !!python/tuple
+      - 0.008579019579064286
+      - 0.008579019579064286
+      - 0.008579019579064286
+  samples_per_env: 2
+material:
+  density: 2875.0
+  friction: 0.05
+  n_particles: 10
+  particle_size: 0.01025
+  shape: sphere
+  vol:
+  - 0.127
+  - 0.127
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 1e-4
+  use_contact_island: true
+  use_hibernation: false
+safety_margin: 0.005
+simulation:
+  backend: gpu
+  dt: 4e-3
+  performance_mode: true
+  precision: '32'
+  substeps: 5
+statistics:
+  n_envs: 10
+  number_of_failed_samples: 0
+  samples_per_env: 2
+  total_samples_collected: 20

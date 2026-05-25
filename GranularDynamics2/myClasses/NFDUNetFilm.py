@@ -175,4 +175,5 @@ class NFDUNetFiLM(nn.Module):
         d2 = self.dec2(torch.cat([self.up2(d3),     s2], dim=1), props)
         d1 = self.dec1(torch.cat([self.up1(d2),     s1], dim=1), props)
 
-        return self.head(d1)                        # (B, 1, H, W)
+        current_state = x[:, 0:1, :, :]
+        return self.head(d1) + current_state                       # (B, 1, H, W)

@@ -18,7 +18,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS = 50
 BATCH_SIZE = 64
 LR = 1e-4
-POS_WEIGHT = 5.0
+POS_WEIGHT = 20.0
 DICE_WEIGHT = 1
 PATIENCE = 10
 
@@ -96,7 +96,7 @@ def empty_totals():
 
 if __name__ == "__main__":
    data_folders = ["corl"]
-   log_dir = Path("runs/nfdunetfilm_bce_dice1")
+   log_dir = Path("runs/nfdunetfilm_bce_dice_change")
    data_aug = True
    log_dir.mkdir(parents=True, exist_ok=True)
 
