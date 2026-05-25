@@ -21,15 +21,15 @@ BATCH_SIZE = 64
 LR = 1e-4
 
 POS_WEIGHT = 20.0
-DICE_WEIGHT = 0
+DICE_WEIGHT = 0.0
 MSE_WEIGHT = 1.0
 SHARPNESS_WEIGHT = 0.0
 TV_WEIGHT = 0.0
-MASS_WEIGHT = 0.1
+MASS_WEIGHT = 0.2
 PATIENCE = 10
 CHANGE_THRESHOLD = 1e-3
-DEFAULT_DATA_FOLDERS = ["corl/cubes"]
-DEFAULT_LOG_DIR = Path("cube_runs/nfu_mse_mass")
+DEFAULT_DATA_FOLDERS = ["corl/cube"]
+DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_mass2")
 
 
 def parse_args():
