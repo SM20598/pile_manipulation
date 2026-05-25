@@ -26,16 +26,19 @@ class PileSweepData(Dataset):
         """
         Initialize dataset with either a folder containing data or a specific run.
 
-            @param paths: list of folder paths or a single folder path containing data files
+            @param paths: list of folder paths or a single folder path containing data files.
+                Relative paths are resolved under Genesis/data; absolute paths are used as-is.
             @param run: number of a specific run
             @param split: one of "train", "val", "test", or None (all data).
-                Each run file is assigned a split deterministically by hashing its
-                path, so adding new runs never reassigns existing ones and every
-                physics group appears in all three splits.
-            @param val_pct: percentage of runs assigned to validation (default 10)
-            @param test_pct: percentage of runs assigned to test (default 10)
+                Splits are deterministic and stratified per leaf data folder, so each
+                physical geometry group contributes to train/val/test when possible.
+                Whole runs with the same nominal physics params stay in the same split.
+            @param val_pct: percentage of physics groups assigned to validation
+            @param test_pct: percentage of physics groups assigned to test
         """
         assert split in (None, "train", "val", "test"), f"Invalid split: {split!r}"
+        if val_pct < 0 or test_pct < 0 or val_pct + test_pct >= 100:
+            raise ValueError("val_pct and test_pct must be non-negative and sum to less than 100.")
         self.runs = []
         self.configs = []
         self._run_lengths = []
@@ -48,7 +51,7 @@ class PileSweepData(Dataset):
             paths = [paths]
 
         for path in paths:
-            full_path = parentpath / "data" / path
+            full_path = self._resolve_data_path(path, parentpath)
             if not full_path.exists():
                 raise FileNotFoundError(f"Data folder not found: {full_path}")
 
@@ -59,10 +62,7 @@ class PileSweepData(Dataset):
                 )
 
             if split is not None:
-                run_files = [
-                    (df, cf) for df, cf in run_files
-                    if self._assign_split(df, full_path, val_pct, test_pct) == split
-                ]
+                run_files = self._filter_split(run_files, split, val_pct, test_pct)
 
             for data_file, config_file in run_files:
                 self.runs.append(torch.load(data_file, map_location="cpu"))
@@ -112,6 +112,13 @@ class PileSweepData(Dataset):
     def _count_samples_in_run(self, run):
         return run["states"].shape[0]
 
+    @staticmethod
+    def _resolve_data_path(path: str | Path, parentpath: Path) -> Path:
+        path = Path(path)
+        if path.is_absolute():
+            return path
+        return parentpath / "data" / path
+
     def _collect_run_paths(self, root: Path, run: int | None):
         run_paths = []
         if run is not None:
@@ -148,17 +155,69 @@ class PileSweepData(Dataset):
 
         return run_paths
 
+    @classmethod
+    def _filter_split(
+        cls,
+        run_files: list[tuple[Path, Path]],
+        split: str,
+        val_pct: int,
+        test_pct: int,
+    ) -> list[tuple[Path, Path]]:
+        split_by_file = {}
+        folder_groups: dict[Path, dict[str, list[tuple[Path, Path]]]] = {}
+
+        for data_file, config_file in run_files:
+            cfg = yaml.full_load(config_file.read_text())
+            physics_key = cls._physics_key(cfg)
+            folder_groups.setdefault(data_file.parent, {}).setdefault(
+                physics_key, []
+            ).append((data_file, config_file))
+
+        for physics_groups in folder_groups.values():
+            groups = sorted(
+                physics_groups.items(),
+                key=lambda item: hashlib.md5(item[0].encode()).hexdigest(),
+            )
+            assignments = cls._assign_group_splits(len(groups), val_pct, test_pct)
+            for (_, group), assigned_split in zip(groups, assignments):
+                for data_file, _ in group:
+                    split_by_file[data_file] = assigned_split
+
+        return [
+            (data_file, config_file)
+            for data_file, config_file in run_files
+            if split_by_file[data_file] == split
+        ]
+
     @staticmethod
-    def _assign_split(data_file: Path, root: Path, val_pct: int, test_pct: int) -> str:
-        """Deterministically assigns a run to train/val/test by hashing its physics
-        identity (shape, n_particles, particle_size, mat_friction, density, box_friction).
-        All runs sharing the same physics params land in the same split, so collecting
-        multiple trajectories per condition never causes leakage."""
-        config_file = data_file.with_name(
-            data_file.stem.replace("_data", "") + "_config.yaml"
+    def _assign_group_splits(num_groups: int, val_pct: int, test_pct: int) -> list[str]:
+        if num_groups <= 0:
+            return []
+
+        test_count = round(num_groups * test_pct / 100)
+        val_count = round(num_groups * val_pct / 100)
+
+        if test_pct > 0 and test_count == 0 and num_groups >= 3:
+            test_count = 1
+        if val_pct > 0 and val_count == 0 and num_groups - test_count >= 2:
+            val_count = 1
+
+        if test_count + val_count >= num_groups:
+            overflow = test_count + val_count - (num_groups - 1)
+            val_count = max(0, val_count - overflow)
+            overflow = test_count + val_count - (num_groups - 1)
+            test_count = max(0, test_count - overflow)
+
+        return (
+            ["test"] * test_count
+            + ["val"] * val_count
+            + ["train"] * (num_groups - test_count - val_count)
         )
-        cfg = yaml.full_load(config_file.read_text())
-        key = "%s|%d|%.6f|%.6f|%.6f|%.6f" % (
+
+    @staticmethod
+    def _physics_key(cfg: dict) -> str:
+        """Nominal physics identity used to keep equivalent runs in one split."""
+        return "%s|%d|%.6f|%.6f|%.6f|%.6f" % (
             cfg["material"]["shape"],
             cfg["material"]["n_particles"],
             cfg["material"]["particle_size"],
@@ -166,6 +225,15 @@ class PileSweepData(Dataset):
             cfg["material"]["density"],
             cfg["box"]["friction"],
         )
+
+    @classmethod
+    def _assign_split(cls, data_file: Path, root: Path, val_pct: int, test_pct: int) -> str:
+        """Backward-compatible split helper for a single run file."""
+        config_file = data_file.with_name(
+            data_file.stem.replace("_data", "") + "_config.yaml"
+        )
+        cfg = yaml.full_load(config_file.read_text())
+        key = cls._physics_key(cfg)
         h = int(hashlib.md5(key.encode()).hexdigest(), 16) % 100
         if h < test_pct:
             return "test"
@@ -442,7 +510,7 @@ class PileSweepData(Dataset):
 
     def _det_physics(self, config):
         self._physics[0] = config["material"]["friction"]
-        self._physics[1] = config["material"]["density"]
+        self._physics[1] = config["material"]["density"] / 5000.0
         self._physics[2] = config["box"]["friction"]
         # self._physics[3] = config["plate"]["speed"]
 
@@ -464,7 +532,6 @@ class PileSweepData(Dataset):
         self._det_physics(config)
 
         return (self._input_grid.clone(), self._physics.clone()), self._output_grid.clone()
-
 
 def main():
     dataset = PileSweepData("test/cube/")

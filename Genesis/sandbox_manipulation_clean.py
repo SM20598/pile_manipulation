@@ -473,45 +473,12 @@ class SandboxManipulation:
                 wall = float(self._wall_thickness)
                 inner_min = torch.tensor([-width / 2, -depth / 2, wall / 2], device=gs.device)
                 inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
-                lower = inner_min + collision_half_extents
-                upper = inner_max - collision_half_extents
-
-                positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
-                placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
-                order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
-                candidate_batch = max(1024, min(4096, 64 * n_particles))
-                min_gap = 1e-3
-
-                for particle_idx_tensor in order:
-                    particle_idx = int(particle_idx_tensor.item())
-                    active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
-                    span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
-                    z_pos = inner_min[2] + half_extents[particle_idx, 2] + min_gap
-                    for _ in range(128):
-                        active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
-                        if active_idx.numel() == 0:
-                            break
-                        candidate_xy = (
-                            torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
-                            * span_xy
-                            + lower[particle_idx, :2]
-                        )
-                        placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
-                        if placed_idx.numel() == 0:
-                            valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
-                        else:
-                            delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
-                            min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
-                            valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
-                        has_valid = valid.any(dim=1)
-                        accepted = active_idx[has_valid]
-                        first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
-                        positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
-                        positions[accepted, particle_idx, 2] = z_pos
-                        active[accepted] = False
-                    if active.any():
-                        raise RuntimeError("placement_failed")
-                    placed[particle_idx] = True
+                positions = self._sample_nonoverlapping_particle_positions(
+                    half_extents=half_extents,
+                    collision_half_extents=collision_half_extents,
+                    inner_min=inner_min,
+                    inner_max=inner_max,
+                )
 
                 envs_idx = torch.arange(self._n_envs, device=gs.device)
                 for particle_idx, particle in enumerate(self.material):
@@ -537,6 +504,126 @@ class SandboxManipulation:
                     continue
                 else:
                     raise
+
+    def _sample_nonoverlapping_particle_positions(
+        self,
+        *,
+        half_extents: torch.Tensor,
+        collision_half_extents: torch.Tensor,
+        inner_min: torch.Tensor,
+        inner_max: torch.Tensor,
+    ) -> torch.Tensor:
+        n_particles = half_extents.shape[0]
+        positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
+        placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
+        order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
+        candidate_batch = max(1024, min(4096, 64 * n_particles))
+        min_gap = 1e-3
+
+        lower = inner_min + collision_half_extents
+        upper = inner_max - collision_half_extents
+        if (upper < lower).any():
+            raise ValueError("At least one particle is too large to fit inside the box.")
+
+        for particle_idx_tensor in order:
+            particle_idx = int(particle_idx_tensor.item())
+            active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
+            span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
+            z_pos = inner_min[2] + half_extents[particle_idx, 2] + min_gap
+            for _ in range(128):
+                active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+                if active_idx.numel() == 0:
+                    break
+                candidate_xy = (
+                    torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
+                    * span_xy
+                    + lower[particle_idx, :2]
+                )
+                placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
+                if placed_idx.numel() == 0:
+                    valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
+                else:
+                    delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
+                    min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
+                    valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
+                has_valid = valid.any(dim=1)
+                if has_valid.any():
+                    accepted = active_idx[has_valid]
+                    first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
+                    positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
+                    positions[accepted, particle_idx, 2] = z_pos
+                    active[accepted] = False
+            if active.any():
+                return self._grid_particle_positions(
+                    half_extents=half_extents,
+                    collision_half_extents=collision_half_extents,
+                    inner_min=inner_min,
+                    inner_max=inner_max,
+                    min_gap=min_gap,
+                )
+            placed[particle_idx] = True
+
+        return positions
+
+    def _grid_particle_positions(
+        self,
+        *,
+        half_extents: torch.Tensor,
+        collision_half_extents: torch.Tensor,
+        inner_min: torch.Tensor,
+        inner_max: torch.Tensor,
+        min_gap: float,
+    ) -> torch.Tensor:
+        n_particles = half_extents.shape[0]
+        max_half_xy = collision_half_extents[:, :2].max(dim=0).values
+        grid_lower = inner_min[:2] + max_half_xy
+        grid_upper = inner_max[:2] - max_half_xy
+        grid_span = grid_upper - grid_lower
+        min_spacing = 2.0 * max_half_xy + min_gap
+
+        best_dims = None
+        best_score = None
+        for n_x in range(1, n_particles + 1):
+            n_y = math.ceil(n_particles / n_x)
+            spacing_x = grid_span[0] / max(n_x - 1, 1)
+            spacing_y = grid_span[1] / max(n_y - 1, 1)
+            if n_x > 1 and bool((spacing_x < min_spacing[0]).item()):
+                continue
+            if n_y > 1 and bool((spacing_y < min_spacing[1]).item()):
+                continue
+            score = abs(float((spacing_x - spacing_y).item())) + 1e-6 * (n_x * n_y - n_particles)
+            if best_score is None or score < best_score:
+                best_dims = (n_x, n_y)
+                best_score = score
+
+        if best_dims is None:
+            raise RuntimeError("placement_failed")
+
+        n_x, n_y = best_dims
+        xs = torch.linspace(grid_lower[0], grid_upper[0], n_x, device=gs.device)
+        ys = torch.linspace(grid_lower[1], grid_upper[1], n_y, device=gs.device)
+        grid_x, grid_y = torch.meshgrid(xs, ys, indexing="xy")
+        cells = torch.stack((grid_x.reshape(-1), grid_y.reshape(-1)), dim=1)
+
+        spacing = torch.stack(
+            (
+                grid_span[0] / max(n_x - 1, 1),
+                grid_span[1] / max(n_y - 1, 1),
+            )
+        )
+        jitter = torch.clamp((spacing - min_spacing) * 0.45, min=0.0)
+
+        positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
+        for env_idx in range(self._n_envs):
+            cell_order = torch.randperm(cells.shape[0], device=gs.device)[:n_particles]
+            particle_order = torch.randperm(n_particles, device=gs.device)
+            xy = cells[cell_order]
+            if torch.any(jitter > 0):
+                xy = xy + (torch.rand((n_particles, 2), device=gs.device) * 2.0 - 1.0) * jitter
+            positions[env_idx, particle_order, :2] = xy
+            positions[env_idx, :, 2] = inner_min[2] + half_extents[:, 2] + min_gap
+
+        return positions
 
     def _random_particle_quats(self, particle, n_envs: int) -> torch.Tensor:
         if not hasattr(particle.morph, "size") and not hasattr(particle.morph, "height"):
