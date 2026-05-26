@@ -106,8 +106,7 @@ def inspect_test_set(args):
             physics = physics.to(device)
             outputs = outputs.to(device)
 
-            logits = model(inputs, physics).squeeze(1).float()
-            predictions = torch.sigmoid(logits)
+            predictions = model(inputs, physics).squeeze(1).float().clamp(0.0, 1.0)
             pred_mask = predictions > 0.5
             target_mask = outputs > 0.5
             intersection = (pred_mask & target_mask).sum(dim=(1, 2)).float()

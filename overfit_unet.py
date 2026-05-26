@@ -33,7 +33,7 @@ def estimate_pos_weight(dataset: Dataset) -> torch.Tensor:
 
     negatives = total - positives
     if positives == 0:
-        raise ValueError("Cannot use BCEWithLogitsLoss: overfit subset has no occupied pixels.")
+        raise ValueError("Cannot use BCE loss: overfit subset has no occupied pixels.")
 
     return torch.tensor([negatives / positives], dtype=torch.float32, device=DEVICE)
 
@@ -58,14 +58,13 @@ def evaluate(model, loader, criterion):
             physics = physics.to(DEVICE)
             outputs = outputs.to(DEVICE)
 
-            logits = model(inputs, physics).squeeze(1).float()
-            probs = torch.sigmoid(logits)
+            probs = model(inputs, physics).squeeze(1).float().clamp(0.0, 1.0)
             current_state = inputs[:, 0]
             changed_mask = (outputs - current_state).abs() > CHANGE_THRESHOLD
             batch_size = inputs.size(0)
             batch_changed_pixels = changed_mask.sum().item()
 
-            total_bce += criterion(logits, outputs).item() * batch_size
+            total_bce += criterion(probs, outputs).item() * batch_size
             total_mse += F.mse_loss(probs, outputs).item() * batch_size
             total_zero_mse += F.mse_loss(torch.zeros_like(outputs), outputs).item() * batch_size
             total_copy_mse += F.mse_loss(current_state, outputs).item() * batch_size
@@ -103,7 +102,7 @@ if __name__ == "__main__":
     model = NFDUNetFiLM().to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     pos_weight = estimate_pos_weight(overfit_dataset)
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = torch.nn.BCELoss()
     writer = SummaryWriter(log_dir=LOG_DIR)
 
     print(f"Overfit samples: {len(overfit_dataset)}")
@@ -122,8 +121,8 @@ if __name__ == "__main__":
                 outputs = outputs.to(DEVICE)
 
                 optimizer.zero_grad(set_to_none=True)
-                logits = model(inputs, physics).squeeze(1).float()
-                loss = criterion(logits, outputs)
+                probs = model(inputs, physics).squeeze(1).float().clamp(1e-6, 1.0 - 1e-6)
+                loss = criterion(probs, outputs)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()

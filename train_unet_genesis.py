@@ -144,8 +144,15 @@ def augment_batch(inputs, outputs, physics):
    return inputs, outputs, physics
 
 
-def soft_dice_loss(logits, targets, eps=1e-6):
-   probs = torch.sigmoid(logits)
+def weighted_bce_loss(probs, targets, eps=1e-6):
+   probs = probs.clamp(eps, 1.0 - eps)
+   return -(
+      POS_WEIGHT * targets * torch.log(probs)
+      + (1.0 - targets) * torch.log(1.0 - probs)
+   ).mean()
+
+
+def soft_dice_loss(probs, targets, eps=1e-6):
    dims = tuple(range(1, probs.ndim))
    intersection = (probs * targets).sum(dim=dims)
    denominator = probs.sum(dim=dims) + targets.sum(dim=dims)
@@ -153,11 +160,11 @@ def soft_dice_loss(logits, targets, eps=1e-6):
    return 1.0 - dice.mean()
 
 
-def combined_loss(logits, outputs, inputs, criterion):
-   probs = torch.sigmoid(logits)
+def combined_loss(predictions, outputs, inputs):
+   probs = predictions.clamp(0.0, 1.0)
    current_state = inputs[:, 0]
-   bce = criterion(logits, outputs)
-   dice = soft_dice_loss(logits, outputs)
+   bce = weighted_bce_loss(probs, outputs)
+   dice = soft_dice_loss(probs, outputs)
    mse = F.mse_loss(probs, outputs)
    sharpness = (probs * (1.0 - probs)).mean()
    tv_h = (probs[:, 1:, :] - probs[:, :-1, :]).abs().mean()
@@ -185,7 +192,7 @@ def combined_loss(logits, outputs, inputs, criterion):
 
 def update_metric_totals(
    totals,
-   logits,
+   predictions,
    outputs,
    inputs,
    loss,
@@ -197,7 +204,7 @@ def update_metric_totals(
    add_loss,
    remove_loss,
 ):
-   probs = torch.sigmoid(logits)
+   probs = predictions.clamp(0.0, 1.0)
    current_state = inputs[:, 0]
    pred_mask = probs > 0.5
    target_mask = outputs > 0.5
@@ -269,7 +276,7 @@ def empty_totals():
    }
 
 
-def evaluate_model(model, loader, criterion):
+def evaluate_model(model, loader):
    model.eval()
    totals = empty_totals()
    with torch.no_grad():
@@ -279,11 +286,11 @@ def evaluate_model(model, loader, criterion):
          physics = physics.to(DEVICE)
          outputs = outputs.to(DEVICE)
 
-         logits = model(inputs, physics).squeeze(1).float()
-         loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(logits, outputs, inputs, criterion)
+         predictions = model(inputs, physics).squeeze(1).float()
+         loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(predictions, outputs, inputs)
          update_metric_totals(
             totals,
-            logits,
+            predictions,
             outputs,
             inputs,
             loss,
@@ -365,9 +372,6 @@ if __name__ == "__main__":
 
    model = build_model(args.model_variant, args.input_mode)
 
-   pos_weight = torch.tensor([POS_WEIGHT], device=DEVICE)
-   criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
    test_loader = DataLoader(
       test_dataset,
       batch_size=args.batch_size,
@@ -381,7 +385,7 @@ if __name__ == "__main__":
       state_dict = torch.load(checkpoint, map_location=DEVICE)
       model.load_state_dict(state_dict)
       print(f"Evaluating checkpoint: {checkpoint}")
-      test_metrics = evaluate_model(model, test_loader, criterion)
+      test_metrics = evaluate_model(model, test_loader)
       print_test_metrics(test_metrics)
       raise SystemExit(0)
 
@@ -430,7 +434,7 @@ if __name__ == "__main__":
    IMPROVEMENT_WINDOW = 5  # epochs over which to measure improvement rate
 
    if start_epoch > 0:
-      resume_val_metrics = evaluate_model(model, val_loader, criterion)
+      resume_val_metrics = evaluate_model(model, val_loader)
       best_val_loss = resume_val_metrics["loss"]
       val_loss_history.append(best_val_loss)
       print(
@@ -456,8 +460,8 @@ if __name__ == "__main__":
             optimizer.zero_grad(set_to_none=True)
 
             with torch.amp.autocast(device_type=DEVICE, dtype=torch.bfloat16):
-               logits = model(inputs, physics).squeeze(1)
-               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(logits.float(), outputs, inputs, criterion)
+               predictions = model(inputs, physics).squeeze(1)
+               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(predictions.float(), outputs, inputs)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -467,7 +471,7 @@ if __name__ == "__main__":
 
             update_metric_totals(
                train_totals,
-               logits.detach().float(),
+               predictions.detach().float(),
                outputs,
                inputs,
                loss.detach(),
@@ -491,11 +495,11 @@ if __name__ == "__main__":
                physics = physics.to(DEVICE)
                outputs = outputs.to(DEVICE)
 
-               logits = model(inputs, physics).squeeze(1).float()
-               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(logits, outputs, inputs, criterion)
+               predictions = model(inputs, physics).squeeze(1).float()
+               loss, bce_loss, dice_loss, sharpness_loss, tv_loss, mass_loss, add_loss, remove_loss = combined_loss(predictions, outputs, inputs)
                update_metric_totals(
                   val_totals,
-                  logits,
+                  predictions,
                   outputs,
                   inputs,
                   loss,
@@ -607,5 +611,5 @@ if __name__ == "__main__":
       )
 
       model.eval()
-      test_metrics = evaluate_model(model, test_loader, criterion)
+      test_metrics = evaluate_model(model, test_loader)
       print_test_metrics(test_metrics)

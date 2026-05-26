@@ -168,8 +168,9 @@ class NFDUNetFiLM(nn.Module):
         d2 = self.dec2(torch.cat([self.up2(d3),     s2], dim=1), props)
         d1 = self.dec1(torch.cat([self.up1(d2),     s1], dim=1), props)
 
+        residual = self.head(d1)
         current_state = x[:, self.residual_channel:self.residual_channel + 1, :, :]
-        return self.head(d1) + current_state                       # (B, 1, H, W)
+        return torch.clamp(current_state + residual, 0.0, 1.0)     # (B, 1, H, W)
 
 
 class NFDUNetFiLMShallow(nn.Module):
@@ -218,5 +219,6 @@ class NFDUNetFiLMShallow(nn.Module):
         d2 = self.dec2(torch.cat([self.up2(b_feat), s2], dim=1), props)
         d1 = self.dec1(torch.cat([self.up1(d2), s1], dim=1), props)
 
+        residual = self.head(d1)
         current_state = x[:, self.residual_channel:self.residual_channel + 1, :, :]
-        return self.head(d1) + current_state
+        return torch.clamp(current_state + residual, 0.0, 1.0)

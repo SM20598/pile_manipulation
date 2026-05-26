@@ -149,8 +149,7 @@ def evaluate_checkpoint(model, loader, n_projections: int, resolution_scale: flo
             outputs = outputs.to(DEVICE)
             current_state = inputs[:, 0]
 
-            logits = model(inputs, physics).squeeze(1).float()
-            probs = torch.sigmoid(logits)
+            probs = model(inputs, physics).squeeze(1).float().clamp(0.0, 1.0)
 
             if order is None:
                 order, deltas = projection_cache(
