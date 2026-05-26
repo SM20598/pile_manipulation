@@ -22,6 +22,7 @@ BATCH_SIZE = 64
 LR = 1e-4
 
 POS_WEIGHT = 20.0
+BCE_WEIGHT = 0.0
 DICE_WEIGHT = 0.0
 MSE_WEIGHT = 1.0
 SHARPNESS_WEIGHT = 0.0
@@ -79,6 +80,8 @@ def parse_args():
       ),
    )
    parser.add_argument("--mse-weight", type=float, default=MSE_WEIGHT)
+   parser.add_argument("--bce-weight", type=float, default=BCE_WEIGHT)
+   parser.add_argument("--pos-weight", type=float, default=POS_WEIGHT)
    parser.add_argument("--sharpness-weight", type=float, default=SHARPNESS_WEIGHT)
    parser.add_argument("--tv-weight", type=float, default=TV_WEIGHT)
    parser.add_argument("--mass-weight", type=float, default=MASS_WEIGHT)
@@ -169,7 +172,7 @@ def combined_loss(logits, outputs, inputs, criterion):
    remove_loss = F.mse_loss(pred_remove, target_remove)
    loss = (
       MSE_WEIGHT * mse
-      + 0.0 * bce
+      + BCE_WEIGHT * bce
       + DICE_WEIGHT * dice
       + SHARPNESS_WEIGHT * sharpness
       + TV_WEIGHT * tv
@@ -322,6 +325,8 @@ if __name__ == "__main__":
    args = parse_args()
    EPOCHS = args.epochs
    MSE_WEIGHT = args.mse_weight
+   BCE_WEIGHT = args.bce_weight
+   POS_WEIGHT = args.pos_weight
    SHARPNESS_WEIGHT = args.sharpness_weight
    TV_WEIGHT = args.tv_weight
    MASS_WEIGHT = args.mass_weight
