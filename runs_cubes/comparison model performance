@@ -118,24 +118,40 @@ Test Loss: 0.016439, Test BCE: 0.757578, Test DiceLoss: 0.096116, Test Sharpness
 
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-python train_unet_genesis.py --model-variant shallow --mass-weight 0.2 --input-mode sweep-removed-residual --log-dir runs_cubes/nfu_mse_mass2_shallow_srr --fresh-start
 
 ######################
 # TOOL-REMOVED-LAYER #
 ######################
-(sri = sweep-removed-input : input is residual)
-(srr = sweep-removed-residual : input is residual)
+
+
+(srr = sweep-removed-residual : residual is relative to sweep-layer)
+
 === Convergence summary nfu_mse_mass_shallow_srr ===
 
+  Epochs run:        70 / 70
+  Resumed from:      0
+  Best val loss:     0.009962  (epoch 70)
+  Suggested budget:  80 epochs  (best epoch + early-stop patience)
+Test Loss: 0.010398, Test BCE: 0.569111, Test DiceLoss: 0.091554, Test SharpnessLoss: 0.010202, Test TVLoss: 0.064850, Test MassLoss: 0.001900, Test AddLoss: 0.007758, Test RemoveLoss: 0.002260, Test MSE: 0.010018, Test IoU: 0.8991, Test Dice: 0.9452, Zero MSE: 0.117805, Copy MSE: 0.019449, Changed Pixel Frac: 0.019449, Changed MSE: 0.418537, Changed Zero MSE: 0.497834, Changed Copy MSE: 1.000000
 
 === Convergence summary nfu_mse_mass_lowres_srr ===
 
+  Epochs run:        68 / 70
+  Resumed from:      0
+  Best val loss:     0.013936  (epoch 58)
+  Suggested budget:  68 epochs  (best epoch + early-stop patience)
+Test Loss: 0.014611, Test BCE: 0.653760, Test DiceLoss: 0.084982, Test SharpnessLoss: 0.014313, Test TVLoss: 0.270659, Test MassLoss: 0.002126, Test AddLoss: 0.009427, Test RemoveLoss: 0.004759, Test MSE: 0.014186, Test IoU: 0.8985, Test Dice: 0.9448, Zero MSE: 0.182758, Copy MSE: 0.026540, Changed Pixel Frac: 0.026540, Changed MSE: 0.405415, Changed Zero MSE: 0.473116, Changed Copy MSE: 1.000000
 
+=== Convergence summary nfu_mse_mass_shallow-lowres_srr ===
+  Epochs run:        70 / 70
+  Resumed from:      0
+  Best val loss:     0.015313  (epoch 60)
+  Suggested budget:  70 epochs  (best epoch + early-stop patience)
+Test Loss: 0.016043, Test BCE: 0.732431, Test DiceLoss: 0.095952, Test SharpnessLoss: 0.016640, Test TVLoss: 0.268272, Test MassLoss: 0.002203, Test AddLoss: 0.009957, Test RemoveLoss: 0.005645, Test MSE: 0.015602, Test IoU: 0.8906, Test Dice: 0.9401, Zero MSE: 0.182758, Copy MSE: 0.026540, Changed Pixel Frac: 0.026540, Changed MSE: 0.454068, Changed Zero MSE: 0.473116, Changed Copy MSE: 1.000000
 
+-----------------------------------------------
 
-
-
-
+(sri = sweep-removed-input : residual is relative to current state)
 
 
 
