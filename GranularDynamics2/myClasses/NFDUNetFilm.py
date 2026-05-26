@@ -110,9 +110,11 @@ class NFDUNetFiLM(nn.Module):
         cond_dim:     int = 3,    # e.g. [friction, obj_size, pusher_width, density]
         base:         int = 8,
         film_hidden:  int = 64,
+        residual_channel: int = 0,
     ):
         super().__init__()
         b = base
+        self.residual_channel = residual_channel
 
         kw = dict(cond_dim=cond_dim, hidden=film_hidden)
 
@@ -166,7 +168,7 @@ class NFDUNetFiLM(nn.Module):
         d2 = self.dec2(torch.cat([self.up2(d3),     s2], dim=1), props)
         d1 = self.dec1(torch.cat([self.up1(d2),     s1], dim=1), props)
 
-        current_state = x[:, 0:1, :, :]
+        current_state = x[:, self.residual_channel:self.residual_channel + 1, :, :]
         return self.head(d1) + current_state                       # (B, 1, H, W)
 
 
@@ -186,9 +188,11 @@ class NFDUNetFiLMShallow(nn.Module):
         cond_dim: int = 3,
         base: int = 8,
         film_hidden: int = 64,
+        residual_channel: int = 0,
     ):
         super().__init__()
         b = base
+        self.residual_channel = residual_channel
         kw = dict(cond_dim=cond_dim, hidden=film_hidden)
 
         self.enc1 = FiLMConvBlock(in_channels, b, **kw)
@@ -214,5 +218,5 @@ class NFDUNetFiLMShallow(nn.Module):
         d2 = self.dec2(torch.cat([self.up2(b_feat), s2], dim=1), props)
         d1 = self.dec1(torch.cat([self.up1(d2), s1], dim=1), props)
 
-        current_state = x[:, 0:1, :, :]
+        current_state = x[:, self.residual_channel:self.residual_channel + 1, :, :]
         return self.head(d1) + current_state

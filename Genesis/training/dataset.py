@@ -23,6 +23,7 @@ class PileSweepData(Dataset):
             val_pct: int = 5,
             test_pct: int = 5,
             resolution_scale: float = 1.0,
+            include_sweep_removed: bool = False,
         ):
         """
         Initialize dataset with either a folder containing data or a specific run.
@@ -49,6 +50,7 @@ class PileSweepData(Dataset):
         self._physics = torch.zeros((3,), dtype=torch.float32)
         self.resolution_scale = float(resolution_scale)
         self.to_pxl = TO_PXL * self.resolution_scale
+        self.include_sweep_removed = bool(include_sweep_removed)
 
 
         parentpath = Path(__file__).parent.parent
@@ -108,7 +110,8 @@ class PileSweepData(Dataset):
         y_pxl = max(1, int(round(y_dim * self.to_pxl)))
         self.ctr_in_PXL = torch.tensor((round(x_pxl / 2), round(y_pxl / 2), 0))
 
-        self._input_grid = torch.zeros((2, x_pxl, y_pxl), dtype=torch.float32)
+        input_channels = 3 if self.include_sweep_removed else 2
+        self._input_grid = torch.zeros((input_channels, x_pxl, y_pxl), dtype=torch.float32)
         self._output_grid = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
 
         # Plate grid and dimension
@@ -342,69 +345,13 @@ class PileSweepData(Dataset):
         plate_dim_y *= self.to_pxl
 
         if not binary:
-            def differentiable_rectangle_occupancy(pos, theta, rect_w, rect_h, sigma=None):
-                """
-                Creates a differentiable soft occupancy grid for a rotated rectangle.
-
-                Args:
-                    H, W       : grid height and width
-                    cx, cy     : rectangle center (in pixel coordinates)
-                    theta      : rotation angle in radians
-                    rect_w     : rectangle width
-                    rect_h     : rectangle height
-                    sigma      : edge softness
-                Returns:
-                    occupancy  : [H, W] tensor with values in [0,1]
-                """
-                if sigma is None:
-                    sigma = max(0.5, 1.5 * self.resolution_scale)
-                _, H, W = self._input_grid.shape
-                cx, cy = pos[:2]
-                # Create coordinate grid
-                ys = torch.linspace(0, H - 1, H)
-                xs = torch.linspace(0, W - 1, W)
-
-                yy, xx = torch.meshgrid(ys, xs, indexing="ij")
-
-                # Translate points into rectangle-centered frame
-                x = xx - cx
-                y = yy - cy
-
-                # Rotation into local rectangle coordinates
-                c = torch.cos(theta)
-                s = torch.sin(theta)
-
-                xr =  c * x + s * y
-                yr = -s * x + c * y
-
-                # Rectangle half extents
-                hx = rect_w / 2.0
-                hy = rect_h / 2.0
-
-                # Signed distance field (SDF)
-                qx = torch.abs(xr) - hx
-                qy = torch.abs(yr) - hy
-
-                dx = torch.clamp(qx, min=0.0)
-                dy = torch.clamp(qy, min=0.0)
-
-                outside_dist = torch.sqrt(dx**2 + dy**2 + 1e-8)
-
-                inside_dist = torch.clamp(torch.maximum(qx, qy), max=0.0)
-
-                sdf = outside_dist + inside_dist
-
-                # Convert SDF -> soft occupancy
-                return torch.sigmoid(-sdf / sigma)
-
-            
-            occ1 = differentiable_rectangle_occupancy(
+            occ1 = self._rectangle_occupancy(
                 start_pos,
                 angle,
                 plate_dim_x,
                 plate_dim_y
             )
-            occ2 = differentiable_rectangle_occupancy(
+            occ2 = self._rectangle_occupancy(
                 end_pos,
                 angle,
                 plate_dim_x,
@@ -441,6 +388,59 @@ class PileSweepData(Dataset):
                 angle,
                 1
             )
+
+    def _rectangle_occupancy(self, pos, theta, rect_w, rect_h, sigma=None):
+        """
+        Creates a soft occupancy grid for a rotated rectangle.
+        Coordinates and dimensions are in pixels.
+        """
+        if sigma is None:
+            sigma = max(0.5, 1.5 * self.resolution_scale)
+        _, H, W = self._input_grid.shape
+        cx, cy = pos[:2]
+        ys = torch.linspace(0, H - 1, H)
+        xs = torch.linspace(0, W - 1, W)
+        yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+
+        x = xx - cx
+        y = yy - cy
+
+        c = torch.cos(theta)
+        s = torch.sin(theta)
+        xr = c * x + s * y
+        yr = -s * x + c * y
+
+        hx = rect_w / 2.0
+        hy = rect_h / 2.0
+        qx = torch.abs(xr) - hx
+        qy = torch.abs(yr) - hy
+        dx = torch.clamp(qx, min=0.0)
+        dy = torch.clamp(qy, min=0.0)
+        outside_dist = torch.sqrt(dx**2 + dy**2 + 1e-8)
+        inside_dist = torch.clamp(torch.maximum(qx, qy), max=0.0)
+        sdf = outside_dist + inside_dist
+        return torch.sigmoid(-sdf / sigma)
+
+    def _swept_plate_occupancy(self, start_pos, end_pos, angle, config):
+        """
+        Soft occupancy of the continuous tool sweep volume.
+
+        The tool orientation is fixed during the sweep, so this accumulates
+        rectangle occupancies along the straight-line path between start and end.
+        """
+        plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
+        plate_dim_x *= self.to_pxl
+        plate_dim_y *= self.to_pxl
+        distance = torch.norm(end_pos[:2] - start_pos[:2]).item()
+        n_steps = max(2, int(math.ceil(distance)) + 1)
+        mask = torch.zeros_like(self._output_grid)
+        for alpha in torch.linspace(0.0, 1.0, n_steps):
+            pos = start_pos + alpha * (end_pos - start_pos)
+            mask = torch.maximum(
+                mask,
+                self._rectangle_occupancy(pos, angle, plate_dim_x, plate_dim_y),
+            )
+        return mask
         
     def plot_grid(self, grid: torch.Tensor, title: str = "", ontop: bool = False) -> None:
         """Visualize the grid as an image"""
@@ -451,44 +451,96 @@ class PileSweepData(Dataset):
         plt.title(title)
         plt.show()
 
-    def plot_input_and_output(self, input_grid: torch.Tensor, label_grid: torch.Tensor, title: str = "") -> None:
+    def plot_input_and_output(
+            self,
+            input_grid: torch.Tensor,
+            label_grid: torch.Tensor,
+            title: str = "",
+            save_path: str | Path | None = None,
+        ) -> Path:
 
         from matplotlib import pyplot as plt
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        if save_path is None:
+            filename = "input_output_plot.png"
+            if title:
+                safe_title = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in title.strip())
+                filename = f"{safe_title or 'input_output_plot'}.png"
+            save_path = Path(__file__).with_name(filename)
+        else:
+            save_path = Path(save_path)
 
-        axes[0].imshow(
+        channel_names = ["Current occupancy", "Action projection"]
+        if input_grid.shape[0] > 2:
+            channel_names.append("Sweep-removed occupancy")
+        channel_names.extend(
+            f"Input channel {idx}"
+            for idx in range(len(channel_names), input_grid.shape[0])
+        )
+
+        n_cols = input_grid.shape[0] + 2
+        fig, axes = plt.subplots(1, n_cols, figsize=(4 * n_cols, 4))
+        if n_cols == 1:
+            axes = [axes]
+        if title:
+            fig.suptitle(title)
+
+        for idx, name in enumerate(channel_names):
+            axes[idx].imshow(
+                input_grid[idx],
+                cmap="gray",
+                origin="lower",
+                vmin=0,
+                vmax=1,
+            )
+            axes[idx].set_title(name)
+            axes[idx].set_xticks([])
+            axes[idx].set_yticks([])
+
+        axes[-2].imshow(
             input_grid[0],
             cmap="Reds",
             alpha=0.5,
             origin="lower",
             vmin=0,
-            vmax=1
+            vmax=1,
         )
-        # Overlay second occupancy grid
-        axes[1].imshow(
-            input_grid[1],
-            cmap="Reds",
-            alpha=0.8,
-            origin="lower",
-            vmin=0,
-            vmax=1
-        )
-        # Plot first occupancy grid
-        axes[1].imshow(
+        axes[-2].imshow(
             label_grid,
             cmap="Blues",
             alpha=0.5,
             origin="lower",
             vmin=0,
-            vmax=1
+            vmax=1,
         )
+        axes[-2].set_title("Current + target")
+        axes[-2].set_xticks([])
+        axes[-2].set_yticks([])
 
-        # Adjust layout
+        axes[-1].imshow(
+            input_grid[1],
+            cmap="Reds",
+            alpha=0.8,
+            origin="lower",
+            vmin=0,
+            vmax=1,
+        )
+        axes[-1].imshow(
+            label_grid,
+            cmap="Blues",
+            alpha=0.5,
+            origin="lower",
+            vmin=0,
+            vmax=1,
+        )
+        axes[-1].set_title("Action + target")
+        axes[-1].set_xticks([])
+        axes[-1].set_yticks([])
+
         plt.tight_layout()
-
-        # Show window
-        plt.show()
+        fig.savefig(save_path, dpi=150)
+        plt.close(fig)
+        return save_path
 
     def _clear_grids(self):
         self._input_grid.zero_()
@@ -554,19 +606,22 @@ class PileSweepData(Dataset):
         self._draw_particle_grid(particles, self._input_grid[0], config)
         self._draw_particle_grid(particles_, self._output_grid, config)
         self._draw_plate(plate_pos, plate_pos_, angle, config)
+        if self.include_sweep_removed:
+            sweep_mask = (self._swept_plate_occupancy(plate_pos, plate_pos_, angle, config) >= 0.5).to(torch.float32)
+            self._input_grid[2] = self._input_grid[0] * (1.0 - sweep_mask)
         self._det_physics(config)
 
         return (self._input_grid.clone(), self._physics.clone()), self._output_grid.clone()
 
 def main():
-    dataset = PileSweepData("test/cube/")
+    dataset = PileSweepData("corl/cube/n40", include_sweep_removed=True)
 
-    for i in range(len(dataset)):
-        inputs, label = dataset[i]
-        input, physics = inputs
-        dataset.plot_input_and_output(input, label, title=f"particles and plate {i}")
-        from matplotlib import pyplot as plt
-        plt.show()
+    for i in range(10):
+        inputs, label = dataset[i+10]
+        input_, physics = inputs
+        
+        dataset.plot_input_and_output(input_, label, title=f"particles and plate {i}")
+        
         
         
 

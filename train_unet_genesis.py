@@ -27,14 +27,15 @@ MSE_WEIGHT = 1.0
 SHARPNESS_WEIGHT = 0.0
 TV_WEIGHT = 0.0
 MASS_WEIGHT = 0.2
-ADD_WEIGHT = 0.5
-REMOVE_WEIGHT = 0.5
+ADD_WEIGHT = 0.0
+REMOVE_WEIGHT = 0.0
 PATIENCE = 10
 CHANGE_THRESHOLD = 1e-3
 DEFAULT_DATA_FOLDERS = ["corl/cube"]
 DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_mass2_addremove")
 RESUME_TRAINING = True
 MODEL_VARIANT = "full"
+INPUT_MODE = "standard"
 LOWRES_SCALE = 0.25
 
 
@@ -66,6 +67,16 @@ def parse_args():
       type=float,
       default=None,
       help="Override dataset render scale. Lowres variants default to 0.25; others default to 1.0.",
+   )
+   parser.add_argument(
+      "--input-mode",
+      choices=["standard", "sweep-removed-input", "sweep-removed-residual"],
+      default=INPUT_MODE,
+      help=(
+         "standard: 2 channels, residual to current occupancy; "
+         "sweep-removed-input: 3 channels, residual to current occupancy; "
+         "sweep-removed-residual: 3 channels, residual to sweep-removed occupancy."
+      ),
    )
    parser.add_argument("--mse-weight", type=float, default=MSE_WEIGHT)
    parser.add_argument("--sharpness-weight", type=float, default=SHARPNESS_WEIGHT)
@@ -105,10 +116,12 @@ def default_resume_checkpoint(log_dir: Path) -> Path | None:
    return None
 
 
-def build_model(model_variant: str):
+def build_model(model_variant: str, input_mode: str):
+   in_channels = 3 if input_mode in ("sweep-removed-input", "sweep-removed-residual") else 2
+   residual_channel = 2 if input_mode == "sweep-removed-residual" else 0
    if model_variant in ("shallow", "shallow-lowres"):
-      return NFDUNetFiLMShallow().to(DEVICE)
-   return NFDUNetFiLM().to(DEVICE)
+      return NFDUNetFiLMShallow(in_channels=in_channels, residual_channel=residual_channel).to(DEVICE)
+   return NFDUNetFiLM(in_channels=in_channels, residual_channel=residual_channel).to(DEVICE)
 
 
 def default_resolution_scale(model_variant: str) -> float:
@@ -321,18 +334,31 @@ if __name__ == "__main__":
       else default_resolution_scale(args.model_variant)
    )
    log_dir = args.log_dir
-   if log_dir == DEFAULT_LOG_DIR and args.model_variant != MODEL_VARIANT:
-      log_dir = log_dir.with_name(f"{log_dir.name}_{args.model_variant}")
+   if log_dir == DEFAULT_LOG_DIR:
+      suffixes = []
+      if args.model_variant != MODEL_VARIANT:
+         suffixes.append(args.model_variant)
+      if args.input_mode != INPUT_MODE:
+         suffixes.append(args.input_mode)
+      if suffixes:
+         log_dir = log_dir.with_name(f"{log_dir.name}_{'_'.join(suffixes)}")
    data_aug = True
    log_dir.mkdir(parents=True, exist_ok=True)
 
    print(f"Model variant: {args.model_variant}")
+   print(f"Input mode: {args.input_mode}")
    print(f"Resolution scale: {resolution_scale}")
    print(f"Log dir: {log_dir}")
 
-   test_dataset: Dataset = PileSweepData(data_folders, split="test", resolution_scale=resolution_scale)
+   include_sweep_removed = args.input_mode in ("sweep-removed-input", "sweep-removed-residual")
+   test_dataset: Dataset = PileSweepData(
+      data_folders,
+      split="test",
+      resolution_scale=resolution_scale,
+      include_sweep_removed=include_sweep_removed,
+   )
 
-   model = build_model(args.model_variant)
+   model = build_model(args.model_variant, args.input_mode)
 
    pos_weight = torch.tensor([POS_WEIGHT], device=DEVICE)
    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -365,8 +391,18 @@ if __name__ == "__main__":
       else:
          print(f"No checkpoint found in {log_dir}; starting from scratch.")
 
-   train_dataset: Dataset = PileSweepData(data_folders, split="train", resolution_scale=resolution_scale)
-   val_dataset: Dataset = PileSweepData(data_folders, split="val", resolution_scale=resolution_scale)
+   train_dataset: Dataset = PileSweepData(
+      data_folders,
+      split="train",
+      resolution_scale=resolution_scale,
+      include_sweep_removed=include_sweep_removed,
+   )
+   val_dataset: Dataset = PileSweepData(
+      data_folders,
+      split="val",
+      resolution_scale=resolution_scale,
+      include_sweep_removed=include_sweep_removed,
+   )
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    if start_epoch > 0:
       resumed_lr = LR * (0.5 ** (start_epoch // 10))

@@ -29,8 +29,13 @@ def model_name(path: Path) -> str:
     return path.parent.name if path.is_file() else path.name
 
 
-def load_model(checkpoint: Path, model_variant: str):
-    model = (NFDUNetFiLMShallow() if model_variant in ("shallow", "shallow-lowres") else NFDUNetFiLM()).to(DEVICE)
+def load_model(checkpoint: Path, model_variant: str, input_mode: str):
+    in_channels = 3 if input_mode in ("sweep-removed-input", "sweep-removed-residual") else 2
+    residual_channel = 2 if input_mode == "sweep-removed-residual" else 0
+    if model_variant in ("shallow", "shallow-lowres"):
+        model = NFDUNetFiLMShallow(in_channels=in_channels, residual_channel=residual_channel).to(DEVICE)
+    else:
+        model = NFDUNetFiLM(in_channels=in_channels, residual_channel=residual_channel).to(DEVICE)
     try:
         state_dict = torch.load(checkpoint, map_location=DEVICE, weights_only=True)
     except TypeError:
@@ -234,6 +239,11 @@ def parse_args():
         default=None,
         help="Defaults to 0.25 for lowres variants and 1.0 otherwise.",
     )
+    parser.add_argument(
+        "--input-mode",
+        choices=["standard", "sweep-removed-input", "sweep-removed-residual"],
+        default="standard",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--n-projections", type=int, default=64)
@@ -248,7 +258,12 @@ def main():
         if args.resolution_scale is not None
         else (0.25 if args.model_variant in ("lowres", "shallow-lowres") else 1.0)
     )
-    dataset = PileSweepData(args.data_folders, split="test", resolution_scale=resolution_scale)
+    dataset = PileSweepData(
+        args.data_folders,
+        split="test",
+        resolution_scale=resolution_scale,
+        include_sweep_removed=args.input_mode in ("sweep-removed-input", "sweep-removed-residual"),
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -261,7 +276,7 @@ def main():
     for model_path in args.models:
         checkpoint = resolve_checkpoint(model_path)
         print(f"Evaluating {model_name(model_path)} from {checkpoint}", flush=True)
-        model = load_model(checkpoint, args.model_variant)
+        model = load_model(checkpoint, args.model_variant, args.input_mode)
         metrics = evaluate_checkpoint(model, loader, args.n_projections, resolution_scale, args.max_batches)
         results.append((model_name(model_path), metrics))
 
