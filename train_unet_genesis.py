@@ -87,6 +87,11 @@ def parse_args():
    parser.add_argument("--mass-weight", type=float, default=MASS_WEIGHT)
    parser.add_argument("--add-weight", type=float, default=ADD_WEIGHT)
    parser.add_argument("--remove-weight", type=float, default=REMOVE_WEIGHT)
+   parser.add_argument(
+      "--soft-particle-occupancy",
+      action="store_true",
+      help="Render particle inputs and targets as soft occupancy fields instead of binary masks.",
+   )
    return parser.parse_args()
 
 
@@ -360,6 +365,7 @@ if __name__ == "__main__":
    print(f"Model variant: {args.model_variant}")
    print(f"Input mode: {args.input_mode}")
    print(f"Resolution scale: {resolution_scale}")
+   print(f"Soft particle occupancy: {args.soft_particle_occupancy}")
    print(f"Log dir: {log_dir}")
 
    include_sweep_removed = args.input_mode in ("sweep-removed-input", "sweep-removed-residual")
@@ -368,6 +374,7 @@ if __name__ == "__main__":
       split="test",
       resolution_scale=resolution_scale,
       include_sweep_removed=include_sweep_removed,
+      soft_particle_occupancy=args.soft_particle_occupancy,
    )
 
    model = build_model(args.model_variant, args.input_mode)
@@ -405,12 +412,14 @@ if __name__ == "__main__":
       split="train",
       resolution_scale=resolution_scale,
       include_sweep_removed=include_sweep_removed,
+      soft_particle_occupancy=args.soft_particle_occupancy,
    )
    val_dataset: Dataset = PileSweepData(
       data_folders,
       split="val",
       resolution_scale=resolution_scale,
       include_sweep_removed=include_sweep_removed,
+      soft_particle_occupancy=args.soft_particle_occupancy,
    )
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    if start_epoch > 0:
