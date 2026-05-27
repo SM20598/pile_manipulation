@@ -2,6 +2,13 @@
 # PERFORMANCE OF VARIOUS LOSSES #
 #################################
 
+=== Convergence summary nfu_bce_mass2_pos1 ===
+  Epochs run:        70 / 70
+  Resumed from:      0
+  Best val loss:     0.035481  (epoch 63)
+  Suggested budget:  73 epochs  (best epoch + early-stop patience)
+Test Loss: 0.037529, Test BCE: 0.037032, Test DiceLoss: 0.086331, Test SharpnessLoss: 0.009314, Test TVLoss: 0.064257, Test MassLoss: 0.002483, Test AddLoss: 0.007468, Test RemoveLoss: 0.002536, Test MSE: 0.010004, Test IoU: 0.8936, Test Dice: 0.9418, Zero MSE: 0.117805, Copy MSE: 0.019449, Changed Pixel Frac: 0.019449, Changed MSE: 0.406957, Changed Zero MSE: 0.497834, Changed Copy MSE: 1.000000
+
 === Convergence summary nfu_mse_mass ===
   Epochs run:        50 / 50
   Best val loss:     0.009633  (epoch 46)
@@ -114,3 +121,64 @@ Test Loss: 0.014902, Test BCE: 0.665813, Test DiceLoss: 0.086871, Test Sharpness
   Best val loss:     0.015760  (epoch 55)
   Suggested budget:  65 epochs  (best epoch + early-stop patience)
 Test Loss: 0.016439, Test BCE: 0.757578, Test DiceLoss: 0.096116, Test SharpnessLoss: 0.016538, Test TVLoss: 0.268393, Test MassLoss: 0.002727, Test AddLoss: 0.010270, Test RemoveLoss: 0.005624, Test MSE: 0.015894, Test IoU: 0.8887, Test Dice: 0.9390, Zero MSE: 0.182758, Copy MSE: 0.026540, Changed Pixel Frac: 0.026540, Changed MSE: 0.464361, Changed Zero MSE: 0.473116, Changed Copy MSE: 1.000000
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+######################
+# TOOL-REMOVED-LAYER #
+######################
+
+
+(srr = sweep-removed-residual : residual is relative to sweep-layer)
+
+=== Convergence summary nfu_mse_mass_shallow_srr ===
+
+  Epochs run:        70 / 70
+  Resumed from:      0
+  Best val loss:     0.009962  (epoch 70)
+  Suggested budget:  80 epochs  (best epoch + early-stop patience)
+Test Loss: 0.010398, Test BCE: 0.569111, Test DiceLoss: 0.091554, Test SharpnessLoss: 0.010202, Test TVLoss: 0.064850, Test MassLoss: 0.001900, Test AddLoss: 0.007758, Test RemoveLoss: 0.002260, Test MSE: 0.010018, Test IoU: 0.8991, Test Dice: 0.9452, Zero MSE: 0.117805, Copy MSE: 0.019449, Changed Pixel Frac: 0.019449, Changed MSE: 0.418537, Changed Zero MSE: 0.497834, Changed Copy MSE: 1.000000
+
+=== Convergence summary nfu_mse_mass_lowres_srr ===
+
+  Epochs run:        68 / 70
+  Resumed from:      0
+  Best val loss:     0.013936  (epoch 58)
+  Suggested budget:  68 epochs  (best epoch + early-stop patience)
+Test Loss: 0.014611, Test BCE: 0.653760, Test DiceLoss: 0.084982, Test SharpnessLoss: 0.014313, Test TVLoss: 0.270659, Test MassLoss: 0.002126, Test AddLoss: 0.009427, Test RemoveLoss: 0.004759, Test MSE: 0.014186, Test IoU: 0.8985, Test Dice: 0.9448, Zero MSE: 0.182758, Copy MSE: 0.026540, Changed Pixel Frac: 0.026540, Changed MSE: 0.405415, Changed Zero MSE: 0.473116, Changed Copy MSE: 1.000000
+
+=== Convergence summary nfu_mse_mass_shallow-lowres_srr ===
+  Epochs run:        70 / 70
+  Resumed from:      0
+  Best val loss:     0.015313  (epoch 60)
+  Suggested budget:  70 epochs  (best epoch + early-stop patience)
+Test Loss: 0.016043, Test BCE: 0.732431, Test DiceLoss: 0.095952, Test SharpnessLoss: 0.016640, Test TVLoss: 0.268272, Test MassLoss: 0.002203, Test AddLoss: 0.009957, Test RemoveLoss: 0.005645, Test MSE: 0.015602, Test IoU: 0.8906, Test Dice: 0.9401, Zero MSE: 0.182758, Copy MSE: 0.026540, Changed Pixel Frac: 0.026540, Changed MSE: 0.454068, Changed Zero MSE: 0.473116, Changed Copy MSE: 1.000000
+
+-----------------------------------------------
+
+(sri = sweep-removed-input : residual is relative to current state)
+
+=== Convergence summary nfu_mse_mass_shallow_sri ===
+  Epochs run:        70 / 70
+  Resumed from:      0
+  Best val loss:     0.009975  (epoch 64)
+  Suggested budget:  74 epochs  (best epoch + early-stop patience)
+Test Loss: 0.010446, Test BCE: 0.550442, Test DiceLoss: 0.092798, Test SharpnessLoss: 0.010380, Test TVLoss: 0.064867, Test MassLoss: 0.002003, Test AddLoss: 0.007742, Test RemoveLoss: 0.002303, Test MSE: 0.010045, Test IoU: 0.8984, Test Dice: 0.9448, Zero MSE: 0.117805, Copy MSE: 0.019449, Changed Pixel Frac: 0.019449, Changed MSE: 0.416749, Changed Zero MSE: 0.497834, Changed Copy MSE: 1.000000
+
+=== Convergence summary nfu_mse_mass_lowres_sri ===
+  Epochs run:        55 / 70
+  Resumed from:      0
+  Best val loss:     0.013907  (epoch 45)
+  Suggested budget:  55 epochs  (best epoch + early-stop patience)
+Test Loss: 0.014641, Test BCE: 0.663702, Test DiceLoss: 0.084117, Test SharpnessLoss: 0.013980, Test TVLoss: 0.271020, Test MassLoss: 0.002243, Test AddLoss: 0.009454, Test RemoveLoss: 0.004739, Test MSE: 0.014193, Test IoU: 0.8982, Test Dice: 0.9446, Zero MSE: 0.182758, Copy MSE: 0.026540, Changed Pixel Frac: 0.026540, Changed MSE: 0.408620, Changed Zero MSE: 0.473116, Changed Copy MSE: 1.000000
+
+=== Convergence summary nfu_mse_mass_shallow-lowres_sri ===
+  Epochs run:        68 / 70
+  Resumed from:      0
+  Best val loss:     0.015311  (epoch 58)
+  Suggested budget:  68 epochs  (best epoch + early-stop patience)
+Test Loss: 0.016073, Test BCE: 0.724052, Test DiceLoss: 0.096764, Test SharpnessLoss: 0.017060, Test TVLoss: 0.268932, Test MassLoss: 0.002162, Test AddLoss: 0.009990, Test RemoveLoss: 0.005651, Test MSE: 0.015641, Test IoU: 0.8909, Test Dice: 0.9403, Zero MSE: 0.182758, Copy MSE: 0.026540, Changed Pixel Frac: 0.026540, Changed MSE: 0.453584, Changed Zero MSE: 0.473116, Changed Copy MSE: 1.000000
+
+
