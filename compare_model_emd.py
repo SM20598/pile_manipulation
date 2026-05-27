@@ -247,6 +247,11 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--n-projections", type=int, default=64)
     parser.add_argument("--max-batches", type=int, default=None, help="Optional quick-check limit.")
+    parser.add_argument(
+        "--soft-particle-occupancy",
+        action="store_true",
+        help="Evaluate against soft particle occupancy fields instead of binary masks.",
+    )
     return parser.parse_args()
 
 
@@ -262,6 +267,7 @@ def main():
         split="test",
         resolution_scale=resolution_scale,
         include_sweep_removed=args.input_mode in ("sweep-removed-input", "sweep-removed-residual"),
+        soft_particle_occupancy=args.soft_particle_occupancy,
     )
     loader = DataLoader(
         dataset,

@@ -24,6 +24,7 @@ class PileSweepData(Dataset):
             test_pct: int = 5,
             resolution_scale: float = 1.0,
             include_sweep_removed: bool = False,
+            soft_particle_occupancy: bool = False,
         ):
         """
         Initialize dataset with either a folder containing data or a specific run.
@@ -37,6 +38,8 @@ class PileSweepData(Dataset):
                 Whole runs with the same nominal physics params stay in the same split.
             @param val_pct: percentage of physics groups assigned to validation
             @param test_pct: percentage of physics groups assigned to test
+            @param soft_particle_occupancy: render particles as soft occupancy
+                fields instead of hard binary masks.
         """
         assert split in (None, "train", "val", "test"), f"Invalid split: {split!r}"
         if val_pct < 0 or test_pct < 0 or val_pct + test_pct >= 100:
@@ -51,6 +54,7 @@ class PileSweepData(Dataset):
         self.resolution_scale = float(resolution_scale)
         self.to_pxl = TO_PXL * self.resolution_scale
         self.include_sweep_removed = bool(include_sweep_removed)
+        self.soft_particle_occupancy = bool(soft_particle_occupancy)
 
 
         parentpath = Path(__file__).parent.parent
@@ -72,8 +76,9 @@ class PileSweepData(Dataset):
                 run_files = self._filter_split(run_files, split, val_pct, test_pct)
 
             for data_file, config_file in run_files:
+                config = yaml.full_load(config_file.read_text())
                 self.runs.append(torch.load(data_file, map_location="cpu"))
-                self.configs.append(yaml.full_load(config_file.read_text()))
+                self.configs.append(config)
                 self._run_lengths.append(self._count_samples_in_run(self.runs[-1]))
         
         if not self.configs:
@@ -113,6 +118,9 @@ class PileSweepData(Dataset):
         input_channels = 3 if self.include_sweep_removed else 2
         self._input_grid = torch.zeros((input_channels, x_pxl, y_pxl), dtype=torch.float32)
         self._output_grid = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
+        ys = torch.linspace(0, x_pxl - 1, x_pxl)
+        xs = torch.linspace(0, y_pxl - 1, y_pxl)
+        self._grid_yy, self._grid_xx = torch.meshgrid(ys, xs, indexing="ij")
 
         # Plate grid and dimension
         x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
@@ -322,10 +330,11 @@ class PileSweepData(Dataset):
 
             if shape == "sphere" or (upright_cylinder and shape=="cylinder"):
                 diameter, _, _ = dimensions
+                radius = float(diameter) * self.to_pxl * 0.5
                 cv2.circle(
                     grid_np,
                     (int(round(center_x)), int(round(center_y))),
-                    max(1, int(round(diameter * self.to_pxl * 0.5))),
+                    max(1, int(round(radius))),
                     color=1,
                     thickness=-1,
                 )
@@ -338,6 +347,17 @@ class PileSweepData(Dataset):
                 quaternion_to_yaw(particle_state[3:]),
                 1
             )
+
+        if self.soft_particle_occupancy:
+            sigma = max(0.5, 0.75 * self.resolution_scale)
+            blurred = cv2.GaussianBlur(
+                grid_np,
+                ksize=(0, 0),
+                sigmaX=sigma,
+                sigmaY=sigma,
+                borderType=cv2.BORDER_REPLICATE,
+            )
+            np.copyto(grid_np, np.clip(blurred, 0.0, 1.0))
     
     def _draw_plate(self, start_pos, end_pos, angle, config, binary=False):
         plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
@@ -396,14 +416,9 @@ class PileSweepData(Dataset):
         """
         if sigma is None:
             sigma = max(0.5, 1.5 * self.resolution_scale)
-        _, H, W = self._input_grid.shape
         cx, cy = pos[:2]
-        ys = torch.linspace(0, H - 1, H)
-        xs = torch.linspace(0, W - 1, W)
-        yy, xx = torch.meshgrid(ys, xs, indexing="ij")
-
-        x = xx - cx
-        y = yy - cy
+        x = self._grid_xx - cx
+        y = self._grid_yy - cy
 
         c = torch.cos(theta)
         s = torch.sin(theta)

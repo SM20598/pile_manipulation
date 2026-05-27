@@ -71,6 +71,7 @@ class FiLMConvBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, cond_dim: int, hidden: int = 64):
         super().__init__()
         self.conv      = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=True)
+        self.conv2      = nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=True)
         self.relu      = nn.ReLU(inplace=True)
         self.film_gen  = FiLMGenerator(cond_dim, out_ch, hidden)
 
@@ -83,6 +84,7 @@ class FiLMConvBlock(nn.Module):
             out : (B, out_ch, H, W)  modulated feature map
         """
         x             = self.relu(self.conv(x))
+        x             = self.relu(self.conv2(x))
         gamma, beta   = self.film_gen(z)
         return gamma * x + beta
 
@@ -99,7 +101,7 @@ class NFDUNetFiLM(nn.Module):
         in_channels : input channels  (default 3: state + 2 rendered actions)
         out_channels: output channels (default 1: predicted next state)
         cond_dim    : dimensionality of the property/conditioning vector z
-        base        : base channel width (default 8, matching Figure 7)
+        base        : base channel width (default 4, matching Figure 7)
         film_hidden : hidden size of each FiLM MLP (default 64)
     """
 
@@ -108,37 +110,34 @@ class NFDUNetFiLM(nn.Module):
         in_channels:  int = 2,
         out_channels: int = 1,
         cond_dim:     int = 3,    # e.g. [friction, obj_size, pusher_width, density]
-        base:         int = 8,
         film_hidden:  int = 64,
         residual_channel: int = 0,
     ):
         super().__init__()
-        b = base
         self.residual_channel = residual_channel
 
         kw = dict(cond_dim=cond_dim, hidden=film_hidden)
 
         # ── Encoder ──────────────────────────────────────────────────────────
-        self.enc1 = FiLMConvBlock(in_channels, b,    **kw)
-        self.enc2 = FiLMConvBlock(b,           b*2,  **kw)
-        self.enc3 = FiLMConvBlock(b*2,         b*4,  **kw)
+        self.enc1 = FiLMConvBlock(in_channels, 4,    **kw)
+        self.enc2 = FiLMConvBlock(4,           8,  **kw)
+        self.enc3 = FiLMConvBlock(8,         16,  **kw)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
         # ── Bottleneck ───────────────────────────────────────────────────────
-        self.bottleneck = FiLMConvBlock(b*4, b*4, **kw)
-
+        self.bottleneck = FiLMConvBlock(16, 32, **kw)
         # ── Decoder ──────────────────────────────────────────────────────────
         self.up3  = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.dec3 = FiLMConvBlock(b*4 + b*4, b*2, **kw)   # skip3 concat → 64→16
+        self.dec3 = FiLMConvBlock(16 + 32, 16, **kw)  
 
         self.up2  = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.dec2 = FiLMConvBlock(b*2 + b*2, b,   **kw)   # skip2 concat → 32→ 8
+        self.dec2 = FiLMConvBlock(8 + 16, 8,   **kw)   
 
         self.up1  = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.dec1 = FiLMConvBlock(b + b,      b//2, **kw)  # skip1 concat → 16→ 4
+        self.dec1 = FiLMConvBlock(4 + 8,      4, **kw) 
 
         # ── Output head (plain 1×1 conv, no FiLM) ───────────────────────────
-        self.head = nn.Conv2d(b//2, out_channels, kernel_size=1)
+        self.head = nn.Conv2d(4, out_channels, kernel_size=1)
 
     def forward(
         self,
@@ -156,9 +155,9 @@ class NFDUNetFiLM(nn.Module):
         """
 
         # Encoder
-        s1 = self.enc1(x,             props)        # (B, b,   H,   W  )
-        s2 = self.enc2(self.pool(s1), props)        # (B, b*2, H/2, W/2)
-        s3 = self.enc3(self.pool(s2), props)        # (B, b*4, H/4, W/4)
+        s1 = self.enc1(x,             props) 
+        s2 = self.enc2(self.pool(s1), props) 
+        s3 = self.enc3(self.pool(s2), props) 
 
         # Bottleneck
         b_feat = self.bottleneck(self.pool(s3), props)  # (B, b*4, H/8, W/8)
@@ -187,28 +186,26 @@ class NFDUNetFiLMShallow(nn.Module):
         in_channels: int = 2,
         out_channels: int = 1,
         cond_dim: int = 3,
-        base: int = 8,
         film_hidden: int = 64,
         residual_channel: int = 0,
     ):
         super().__init__()
-        b = base
         self.residual_channel = residual_channel
         kw = dict(cond_dim=cond_dim, hidden=film_hidden)
 
-        self.enc1 = FiLMConvBlock(in_channels, b, **kw)
-        self.enc2 = FiLMConvBlock(b, b * 2, **kw)
+        self.enc1 = FiLMConvBlock(in_channels, 4, **kw)
+        self.enc2 = FiLMConvBlock(4, 8, **kw)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.bottleneck = FiLMConvBlock(b * 2, b * 2, **kw)
+        self.bottleneck = FiLMConvBlock(8, 16, **kw)
 
         self.up2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-        self.dec2 = FiLMConvBlock(b * 2 + b * 2, b, **kw)
+        self.dec2 = FiLMConvBlock(8 + 16, 8, **kw)
 
         self.up1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-        self.dec1 = FiLMConvBlock(b + b, b // 2, **kw)
+        self.dec1 = FiLMConvBlock(4 + 8, 4, **kw)
 
-        self.head = nn.Conv2d(b // 2, out_channels, kernel_size=1)
+        self.head = nn.Conv2d(4, out_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor, props: torch.Tensor) -> torch.Tensor:
         s1 = self.enc1(x, props)
