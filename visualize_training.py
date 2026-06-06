@@ -13,6 +13,40 @@ from Genesis.training.dataset import PileSweepData
 from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Inspect NFDUNetFiLM predictions on the Genesis test split.")
+    parser.add_argument("--checkpoint", type=Path, default=Path("runs/nfdunetfilm_bce_dice/unet_best.pth"), help="Path to the trained NFDUNetFiLM state dict.",)
+
+    # +++ MODEL SETTINGS +++
+    parser.add_argument("--data-folders", nargs="+", default=["corl/cubes"])
+    parser.add_argument("--model-variant", choices=["full", "shallow", "lowres", "shallow-lowres"], default="full", help=(
+        "full: UNet of depth 3 with 128x128 grid input;"
+        "shallow: UNet of depth 2 with 128x128 grid input;"
+        "lowres: UNet of depth 3 with 32x32 grid input;"
+        "shallow-lowres: UNet of depth 2 with 32x32 grid input;"
+        ),
+    )
+    parser.add_argument("--input-mode", choices=["standard", "sweep-removed-input", "sweep-removed-residual"], default="standard", help=(
+            "standard: 2 channels, residual to current occupancy; "
+            "sweep-removed-input: 3 channels, residual to current occupancy; "
+            "sweep-removed-residual: 3 channels, residual to sweep-removed occupancy."
+        ),
+    )
+    parser.add_argument("--batch-size", type=int, default=64, help="To adjust if custom test set")
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-plots", type=int, default=8)
+    parser.add_argument("--start", type=int, default=0, help="First test-set sample index to plot.")
+    parser.add_argument("--save-dir", type=Path, default="", help="Directory for saved inspection PNGs. Use --save-dir '' to disable saving.",)
+    parser.add_argument("--show", action="store_true", help="Also call plt.show() for interactive backends.")
+    parser.add_argument("--cpu", action="store_true", help="Force CPU inference.")
+    args = parser.parse_args()
+    
+    if args.save_dir == Path(""):
+        args.save_dir = None
+    elif args.save_dir == "":
+        args.save_dir = Path(args.checkpoint.parent) / "plots"
+    return args
+
 def plot_prediction(
     input_grid,
     action_grid,
@@ -79,8 +113,16 @@ def load_model(checkpoint_path, device):
 
 def inspect_test_set(args):
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
-
-    dataset = PileSweepData(args.data_folders, split="test")
+    
+    resolution_scale = 0.25 if args.model_variant in ("lowres", "shallow-lowres") else 1.0 # low-res models have 0.25 resolution of the original size
+    include_sweep_removed = args.input_mode in ("sweep-removed-input", "sweep-removed-residual")
+    
+    dataset = PileSweepData(
+        args.data_folders,
+        split="test",
+        resolution_scale=resolution_scale,
+        include_sweep_removed=include_sweep_removed,
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -157,23 +199,6 @@ def inspect_test_set(args):
     print(f"Hard Dice @0.5: {total_dice / num_samples:.4f}")
     if args.save_dir is not None and plotted > 0:
         print(f"Saved plots to: {args.save_dir}")
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Inspect NFDUNetFiLM predictions on the Genesis test split.")
-    parser.add_argument("--checkpoint", type=Path, default=Path("runs/nfdunetfilm_bce_dice/unet_best.pth"), help="Path to the trained NFDUNetFiLM state dict.",)
-    parser.add_argument("--data-folders", nargs="+", default=["corl"], help="Dataset folders under Genesis/data.",)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--num-plots", type=int, default=8)
-    parser.add_argument("--start", type=int, default=0, help="First test-set sample index to plot.")
-    parser.add_argument("--save-dir", type=Path, default=Path("runs/nfdunetfilm_bce_dice/test_plots"), help="Directory for saved inspection PNGs. Use --save-dir '' to disable saving.",)
-    parser.add_argument("--show", action="store_true", help="Also call plt.show() for interactive backends.")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU inference.")
-    args = parser.parse_args()
-    if args.save_dir == Path(""):
-        args.save_dir = None
-    return args
 
 
 if __name__ == "__main__":
