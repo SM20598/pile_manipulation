@@ -169,7 +169,7 @@ class NFDUNetFiLM(nn.Module):
 
         residual = self.head(d1)
         current_state = x[:, self.residual_channel:self.residual_channel + 1, :, :]
-        return torch.clamp(current_state + residual, 0.0, 1.0)     # (B, 1, H, W)
+        return torch.sigmoid(current_state + residual)     # (B, 1, H, W)
 
 
 class NFDUNetFiLMShallow(nn.Module):

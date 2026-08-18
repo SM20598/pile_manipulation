@@ -21,7 +21,6 @@ EPOCHS = 70
 BATCH_SIZE = 64
 LR = 1e-4
 
-DICE_WEIGHT = 0.0
 MSE_WEIGHT = 1.0
 MASS_WEIGHT = 0.2
 PATIENCE = 10
@@ -64,7 +63,6 @@ def parse_args():
    parser.add_argument("--fresh-start", action="store_true", help="Do not resume from an existing checkpoint.")
    parser.add_argument("--resume-checkpoint", type=Path, default=None, help="Checkpoint to resume training from.")
    parser.add_argument("--start-epoch", type=int, default=None, help="Epoch index already completed by the resume checkpoint.")
-   
    parser.add_argument("--mse-weight", type=float, default=MSE_WEIGHT)
    parser.add_argument("--mass-weight", type=float, default=MASS_WEIGHT)
    
@@ -118,26 +116,12 @@ def augment_batch(inputs, outputs, physics):
    return inputs, outputs, physics
 
 
-def soft_dice_loss(
-      logits: torch.Tensor,
-      targets: torch.Tensor,
-      eps=1e-6
-   ) -> torch.Tensor:
-   probs = torch.sigmoid(logits)
-   dims = tuple(range(1, probs.ndim))
-   intersection = (probs * targets).sum(dim=dims)
-   denominator = probs.sum(dim=dims) + targets.sum(dim=dims)
-   dice = (2.0 * intersection + eps) / (denominator + eps)
-   return 1.0 - dice.mean()
 
-
-def combined_loss(logits: torch.Tensor, outputs:torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-   probs = torch.sigmoid(logits)
-   dice = soft_dice_loss(logits, outputs)
-   mse = F.mse_loss(probs, outputs)
-   mass = (probs.sum(dim=(1, 2)) - outputs.sum(dim=(1, 2))).abs().mean() / outputs[0].numel()
-   loss = MSE_WEIGHT * mse + DICE_WEIGHT * dice + MASS_WEIGHT * mass
-   return (loss, dice, mass)
+def combined_loss(predictions: torch.Tensor, outputs:torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+   mse = F.mse_loss(predictions, outputs)
+   mass = (predictions.sum(dim=(1, 2)) - outputs.sum(dim=(1, 2))).abs().mean() / outputs[0].numel()
+   loss = MSE_WEIGHT * mse + MASS_WEIGHT * mass
+   return (loss, mass)
 
 
 def update_metric_totals(
@@ -146,12 +130,10 @@ def update_metric_totals(
    outputs,
    inputs,
    loss,
-   dice_loss,
    mass_loss,
 ):
-   probs = predictions.clamp(0.0, 1.0)
    current_state = inputs[:, 0]
-   pred_mask = probs > 0.5
+   pred_mask = predictions > 0.5
    target_mask = outputs > 0.5
    changed_mask = (outputs - current_state).abs() > CHANGE_THRESHOLD
    batch_size = inputs.size(0)
@@ -162,19 +144,17 @@ def update_metric_totals(
    changed_count = changed_mask.sum().item()
 
    totals["loss"] += loss.item() * batch_size
-   totals["dice_loss"] += dice_loss.item() * batch_size
    totals["mass_loss"] += mass_loss.item() * batch_size
-   totals["prob_mse"] += F.mse_loss(probs, outputs).item() * batch_size
+   totals["prob_mse"] += F.mse_loss(predictions, outputs).item() * batch_size
    totals["zero_mse"] += F.mse_loss(torch.zeros_like(outputs), outputs).item() * batch_size
    totals["copy_mse"] += F.mse_loss(current_state, outputs).item() * batch_size
    if changed_count > 0:
-      totals["changed_prob_sse"] += ((probs - outputs).pow(2) * changed_mask).sum().item()
+      totals["changed_prob_sse"] += ((predictions - outputs).pow(2) * changed_mask).sum().item()
       totals["changed_zero_sse"] += outputs.pow(2).mul(changed_mask).sum().item()
       totals["changed_copy_sse"] += ((current_state - outputs).pow(2) * changed_mask).sum().item()
       totals["changed_pixels"] += changed_count
    totals["total_pixels"] += changed_mask.numel()
    totals["hard_iou"] += ((intersection + 1e-6) / (union + 1e-6)).sum().item()
-   totals["hard_dice"] += ((2.0 * intersection + 1e-6) / (pred_area + target_area + 1e-6)).sum().item()
    totals["size"] += batch_size
 
 
@@ -195,7 +175,6 @@ def average_metrics(totals):
 def empty_totals():
    return {
       "loss": 0.0,
-      "dice_loss": 0.0,
       "mass_loss": 0.0,
       "prob_mse": 0.0,
       "zero_mse": 0.0,
@@ -206,7 +185,6 @@ def empty_totals():
       "changed_pixels": 0,
       "total_pixels": 0,
       "hard_iou": 0.0,
-      "hard_dice": 0.0,
       "size": 0,
    }
 
@@ -221,15 +199,14 @@ def evaluate_model(model, loader):
          physics = physics.to(DEVICE)
          outputs = outputs.to(DEVICE)
 
-         logits = model(inputs, physics).squeeze(1).float()
-         loss, dice_loss, mass_loss = combined_loss(logits, outputs)
+         predictions = model(inputs, physics).squeeze(1).float()
+         loss, mass_loss = combined_loss(predictions, outputs)
          update_metric_totals(
             totals,
             predictions,
             outputs,
             inputs,
             loss,
-            dice_loss,
             mass_loss
          )
 
@@ -239,11 +216,9 @@ def evaluate_model(model, loader):
 def print_test_metrics(test_metrics):
    print(
       f"Test Loss: {test_metrics['loss']:.6f}, "
-      f"Test DiceLoss: {test_metrics['dice_loss']:.6f}, "
       f"Test MassLoss: {test_metrics['mass_loss']:.6f}, "
       f"Test MSE: {test_metrics['prob_mse']:.6f}, "
       f"Test IoU: {test_metrics['hard_iou']:.4f}, "
-      f"Test Dice: {test_metrics['hard_dice']:.4f}, "
       f"Zero MSE: {test_metrics['zero_mse']:.6f}, "
       f"Copy MSE: {test_metrics['copy_mse']:.6f}, "
       f"Changed Pixel Frac: {test_metrics['changed_pixel_frac']:.6f}, "
@@ -367,7 +342,7 @@ if __name__ == "__main__":
 
             with torch.amp.autocast(device_type=DEVICE, dtype=torch.bfloat16):
                logits: torch.Tensor = model(inputs, physics).squeeze(1)
-               loss, dice_loss, mass_loss = combined_loss(logits.float(), outputs)
+               loss, mass_loss = combined_loss(logits.float(), outputs)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -375,7 +350,7 @@ if __name__ == "__main__":
             scaler.step(optimizer)
             scaler.update()
 
-            update_metric_totals(train_totals, logits.detach().float(), outputs, inputs, loss.detach(), dice_loss.detach(), mass_loss.detach())
+            update_metric_totals(train_totals, logits.detach().float(), outputs, inputs, loss.detach(), mass_loss.detach())
 
          train_metrics = average_metrics(train_totals)
 
@@ -390,8 +365,8 @@ if __name__ == "__main__":
                outputs = outputs.to(DEVICE)
 
                logits = model(inputs, physics).squeeze(1).float()
-               loss, dice_loss, mass_loss = combined_loss(logits, outputs)
-               update_metric_totals(val_totals, logits, outputs, inputs, loss, dice_loss,mass_loss)
+               loss, mass_loss = combined_loss(logits, outputs)
+               update_metric_totals(val_totals, logits, outputs, inputs, loss, mass_loss)
 
          val_metrics = average_metrics(val_totals)
          avg_val_loss = val_metrics["loss"]
@@ -401,7 +376,7 @@ if __name__ == "__main__":
             f"Epoch {epoch + 1}: "
             f"train loss={train_metrics['loss']:.6f}, train MSE={train_metrics['prob_mse']:.6f}, "
             f"val loss={val_metrics['loss']:.6f}, val MSE={val_metrics['prob_mse']:.6f}, "
-            f"val IoU={val_metrics['hard_iou']:.4f}, val Dice={val_metrics['hard_dice']:.4f}, "
+            f"val IoU={val_metrics['hard_iou']:.4f}, "
             f"val copy MSE={val_metrics['copy_mse']:.6f}, "
             f"val changed MSE={val_metrics['changed_mse']:.6f}, "
             f"val changed copy MSE={val_metrics['changed_copy_mse']:.6f}"
@@ -425,8 +400,6 @@ if __name__ == "__main__":
 
          writer.add_scalar("Loss/TrainCombined", train_metrics["loss"], epoch)
          writer.add_scalar("Loss/ValCombined", val_metrics["loss"], epoch)
-         writer.add_scalar("Loss/TrainDice", train_metrics["dice_loss"], epoch)
-         writer.add_scalar("Loss/ValDice", val_metrics["dice_loss"], epoch)
          writer.add_scalar("Loss/TrainMass", train_metrics["mass_loss"], epoch)
          writer.add_scalar("Loss/ValMass", val_metrics["mass_loss"], epoch)
          writer.add_scalar("Metric/TrainProbMSE", train_metrics["prob_mse"], epoch)
@@ -436,7 +409,6 @@ if __name__ == "__main__":
          writer.add_scalar("Metric/TrainChangedPixelFrac", train_metrics["changed_pixel_frac"], epoch)
          writer.add_scalar("Metric/ValChangedPixelFrac", val_metrics["changed_pixel_frac"], epoch)
          writer.add_scalar("Metric/ValHardIoU", val_metrics["hard_iou"], epoch)
-         writer.add_scalar("Metric/ValHardDice", val_metrics["hard_dice"], epoch)
          writer.add_scalar("Baseline/ValZeroMSE", val_metrics["zero_mse"], epoch)
          writer.add_scalar("Baseline/ValCopyInputMSE", val_metrics["copy_mse"], epoch)
          writer.add_scalar("Baseline/ValChangedZeroMSE", val_metrics["changed_zero_mse"], epoch)
