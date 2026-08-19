@@ -16,7 +16,7 @@ rigid_options:
   use_hibernation: False
 
 box:
-  vol : [0.128, 0.128, 0.04]
+  vol : [0.128, 0.128, 0.032]
   wall_thickness : 0.02
   friction : None                           # SET IN DATA_COLLECTION LOOP
 material:

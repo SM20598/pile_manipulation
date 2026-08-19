@@ -1,7 +1,13 @@
-genesis-world==0.4.5
-torch==2.11.0
-torchvision==0.26.0
-numpy-quaternion==2024.0.13 # potentially remove again
-bayesian-optimization==3.2.1
+genesis-world
+torch==2.12.0
+torchvision==0.27.0
 PyYAML
 tensorboard==2.20.0
+einops==0.4.1
+hydra-core==1.2.0
+hydra-submitit-launcher==1.2.0
+omegaconf==2.3.0
+accelerate==0.26.1
+wandb
+decord==0.6.0
+

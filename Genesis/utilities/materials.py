@@ -3,6 +3,64 @@ import genesis as gs
 from genesis import Scene
 import numpy as np
 
+
+def _resolve_particle_sizes(particle_size: float | list[float], num_particles: int):
+    """Expands a scalar, a [min, max] range, or a per-particle list into one size per particle."""
+    if isinstance(particle_size, (int, float)):
+        return np.full(num_particles, float(particle_size), dtype=float)
+    if len(particle_size) == 2 and num_particles != 2:
+        return np.linspace(float(particle_size[0]), float(particle_size[1]), num_particles)
+    if len(particle_size) == num_particles:
+        return np.asarray([float(size) for size in particle_size], dtype=float)
+    raise ValueError(
+        "particle_size must be a scalar, a [min, max] range, or a list "
+        "with the same length as num_particles."
+    )
+
+
+def _particle_dimensions(shape: str, sizes: np.ndarray):
+    """
+    Returns (half_extents, placement_half_extents), each shape (n_particles, 3).
+
+    placement_half_extents differs from half_extents only for cylinders, where it's
+    inflated to the largest half-extent on every axis to conservatively account for
+    particles that may be lying on their side (see random_euler in random_sequential_addition).
+    """
+    max_size = float(np.max(sizes))
+
+    def dims(i):
+        size = float(sizes[i])
+        if shape in ("cube", "box"):
+            return (size, size, size)
+        if shape == "sphere":
+            return (size, size, size)
+        if shape in ("rectangle", "rectangular_cube"):
+            side = 0.5 * max_size
+            return (size, side, side)
+        if shape == "cylinder":
+            radius = 0.5 * max_size
+            return (2 * radius, 2 * radius, size)
+        raise ValueError(f"Unsupported shape {shape}. Supported shapes are 'cube', 'sphere', 'rectangle', and 'cylinder'.")
+
+    dimensions = np.asarray([dims(i) for i in range(len(sizes))], dtype=float)
+    half_extents = dimensions * 0.5
+    placement_half_extents = half_extents.copy()
+    if shape == "cylinder":
+        placement_half_extents[:] = np.max(half_extents, axis=1, keepdims=True)
+    return half_extents, placement_half_extents
+
+
+def max_particle_height(shape: str, particle_size: float | list[float], num_particles: int) -> float:
+    """
+    Full z-extent (not half) the tallest particle could occupy, accounting for
+    cylinders potentially lying on their side. Used to size the box height so a
+    resting monolayer never sticks out above the walls.
+    """
+    sizes = _resolve_particle_sizes(particle_size, num_particles)
+    _, placement_half_extents = _particle_dimensions(shape, sizes)
+    return float(np.max(placement_half_extents[:, 2])) * 2
+
+
 def random_sequential_addition(
     scene : Scene,
     granular_vol : Tuple[float, float, float],
@@ -10,60 +68,29 @@ def random_sequential_addition(
     num_particles : int,
     particle_size : float | list[float],
     wall_thickness : float,
+    box_height : float,
 ):
     """Create randomly positioned and oriented particles without initial overlap."""
-    width, depth, height = granular_vol
+    width, depth, _ = granular_vol
 
-    fix_size = isinstance(particle_size, (int, float))
-    if not fix_size:
-        if len(particle_size) == 2 and num_particles != 2:
-            particle_size = np.linspace(float(particle_size[0]), float(particle_size[1]), num_particles)
-        elif len(particle_size) == num_particles:
-            particle_size = [float(size) for size in particle_size]
-        else:
-            raise ValueError(
-                "particle_size must be a scalar, a [min, max] range, or a list "
-                "with the same length as num_particles."
-            )
-
-    max_particle_size = float(particle_size) if fix_size else max(particle_size)
-
-    def get_radius(i):
-        return get_length(i) / 2.0
-
-    def get_length(i):
-        return float(particle_size) if fix_size else particle_size[i]
-
-    def get_particle_dimensions(i):
-        if shape in ("cube", "box"):
-            r = get_length(i)
-            return (r, r, r), r
-        if shape == "sphere":
-            r = get_radius(i)
-            return (2 * r, 2 * r, 2 * r), r
-        if shape in ("rectangle", "rectangular_cube"):
-            length = get_length(i)
-            side = 0.5 * max_particle_size
-            dimensions = (length, side, side)
-            return dimensions, 0.5 * np.linalg.norm(dimensions)
-        if shape == "cylinder":
-            length = get_length(i)
-            radius = 0.5 * max_particle_size
-            dimensions = (2 * radius, 2 * radius, length)
-            return dimensions, np.sqrt(radius**2 + (length / 2) ** 2)
-        raise ValueError(f"Unsupported shape {shape}. Supported shapes are 'cube', 'sphere', 'rectangle', and 'cylinder'.")
-
-    particle_dimensions = [get_particle_dimensions(i)[0] for i in range(num_particles)]
-    half_extents = np.asarray(particle_dimensions, dtype=float) * 0.5
-    placement_half_extents = half_extents.copy()
-    if shape == "cylinder":
-        placement_half_extents[:] = np.max(half_extents, axis=1, keepdims=True)
+    sizes = _resolve_particle_sizes(particle_size, num_particles)
+    half_extents, placement_half_extents = _particle_dimensions(shape, sizes)
     floor_z = wall_thickness / 2.0
 
     lower_xy = np.array([-width / 2, -depth / 2], dtype=float) + placement_half_extents[:, :2]
     upper_xy = np.array([width / 2, depth / 2], dtype=float) - placement_half_extents[:, :2]
     if np.any(upper_xy < lower_xy):
         raise ValueError("At least one particle is too large to fit inside the granular volume.")
+
+    required_height = wall_thickness + float(np.max(placement_half_extents[:, 2])) * 2
+    fit_eps = 1e-6  # tolerance for float32 rounding when box height is an exact fit
+    if box_height < required_height - fit_eps:
+        raise ValueError(
+            f"Box height ({box_height:.4f}) is too small for these particles: it must be "
+            f"at least wall_thickness + particle height ({wall_thickness:.4f} + "
+            f"{required_height - wall_thickness:.4f} = {required_height:.4f}), "
+            "otherwise particles stick out of the box in z."
+        )
 
     positions = np.empty((num_particles, 3), dtype=float)
     order = np.argsort(-np.prod(half_extents[:, :2], axis=1))
@@ -108,8 +135,8 @@ def random_sequential_addition(
     entities = []
     particle_sizes = []
     for i in range(num_particles):
-        dimensions, r = get_particle_dimensions(i)
-        size_x, size_y, size_z = dimensions
+        size_x, size_y, size_z = half_extents[i] * 2
+        r = float(np.max(half_extents[i]))
         pos = tuple(float(value) for value in positions[i])
         euler = random_euler()
 
@@ -125,7 +152,6 @@ def random_sequential_addition(
             surface=gs.surfaces.Default(color=[1.0, 1.0, 0.0]),
         )
         entities.append(entity)
-        particle_sizes.append(tuple(float(value) for value in dimensions))
+        particle_sizes.append(tuple(float(value) for value in (size_x, size_y, size_z)))
 
-    print(f"Generated {len(positions)} particles out of {num_particles}")
     return entities, particle_sizes

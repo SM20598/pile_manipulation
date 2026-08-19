@@ -21,6 +21,7 @@ class PileSweepData(Dataset):
             resolution_scale: float = 1.0,
             include_sweep_removed: bool = False,
             soft_particle_occupancy: bool = False,
+            source: str = "auto",
         ):
         """
         Initialize dataset with either a folder containing data or a specific run.
@@ -36,7 +37,16 @@ class PileSweepData(Dataset):
             @param test_pct: percentage of physics groups assigned to test
             @param soft_particle_occupancy: render particles as soft occupancy
                 fields instead of hard binary masks.
+            @param source: one of "auto", "data", "rollout".
+                "data" only uses the legacy flattened `_data.pt` files (successful
+                pushes only). "rollout" requires the newer `_rollout.pt` files
+                (every push, including ones where the plate didn't fully reach its
+                target, since the resulting state is still valid dynamics data) and
+                errors if a run doesn't have one. "auto" (default) prefers
+                `_rollout.pt` when present and falls back to `_data.pt` otherwise, so
+                folders collected before rollouts were saved keep working unchanged.
         """
+        assert source in ("auto", "data", "rollout"), f"Invalid source: {source!r}"
         assert split in (None, "train", "val", "test"), f"Invalid split: {split!r}"
         if val_pct < 0 or test_pct < 0 or val_pct + test_pct >= 100:
             raise ValueError("val_pct and test_pct must be non-negative and sum to less than 100.")
@@ -62,7 +72,7 @@ class PileSweepData(Dataset):
             if not full_path.exists():
                 raise FileNotFoundError(f"Data folder not found: {full_path}")
 
-            run_files = self._collect_run_paths(full_path, run)
+            run_files = self._collect_run_paths(full_path, run, source)
             if not run_files:
                 raise FileNotFoundError(
                     f"No data runs found in path: {full_path}"
@@ -74,9 +84,13 @@ class PileSweepData(Dataset):
             for data_file, config_file in run_files:
                 run = torch.load(data_file, map_location="cpu")
                 con = yaml.full_load(config_file.read_text())
+                if data_file.name.endswith("_rollout.pt"):
+                    run, num_samples = self._flatten_rollout(run, con)
+                else:
+                    num_samples = con["statistics"]["total_samples_collected"]
                 self.runs.append(run)
                 self.configs.append(con)
-                self._run_lengths.append(con["statistics"]["total_samples_collected"])
+                self._run_lengths.append(num_samples)
         
         if not self.configs:
             raise ValueError("No configs found for dataset.")
@@ -124,7 +138,25 @@ class PileSweepData(Dataset):
             return path
         return parentpath / "data" / path
 
-    def _collect_run_paths(self, root: Path, run: int | None):
+    @staticmethod
+    def _select_source(data_file: Path, source: str) -> Path:
+        """
+        Given a resolved `*_data.pt` path, decides which file actually backs the
+        run: the legacy flattened file itself, or its `*_rollout.pt` sibling.
+        """
+        rollout_file = data_file.with_name(data_file.name.replace("_data.pt", "_rollout.pt"))
+        if source == "data":
+            return data_file
+        if source == "rollout":
+            if not rollout_file.exists():
+                raise FileNotFoundError(
+                    f"source='rollout' requested but no rollout file found: {rollout_file}"
+                )
+            return rollout_file
+        # source == "auto"
+        return rollout_file if rollout_file.exists() else data_file
+
+    def _collect_run_paths(self, root: Path, run: int | None, source: str = "auto"):
         run_paths = []
         if run is not None:
             run_name = str(run)
@@ -133,9 +165,9 @@ class PileSweepData(Dataset):
             _expected_data = root / f"_{run_name}_data.pt"
             _expected_config = root / f"_{run_name}_config.yaml"
             if expected_data.exists() and expected_config.exists():
-                return [(expected_data, expected_config)]
+                return [(self._select_source(expected_data, source), expected_config)]
             elif _expected_data.exists() and _expected_config.exists():
-                return [(_expected_data, _expected_config)]
+                return [(self._select_source(_expected_data, source), _expected_config)]
 
             for subdir in sorted(root.iterdir()):
                 if not subdir.is_dir():
@@ -145,9 +177,9 @@ class PileSweepData(Dataset):
                 _data_file = subdir / f"_{run_name}_data.pt"
                 _config_file = subdir / f"_{run_name}_config.yaml"
                 if data_file.exists() and config_file.exists():
-                    return [(data_file, config_file)]
+                    return [(self._select_source(data_file, source), config_file)]
                 elif _data_file.exists() and _config_file.exists():
-                    return [(_data_file, _config_file)]
+                    return [(self._select_source(_data_file, source), _config_file)]
 
             return []
 
@@ -156,9 +188,27 @@ class PileSweepData(Dataset):
                 f"{data_file.stem.replace('_data', '')}_config.yaml"
             )
             if config_file.exists():
-                run_paths.append((data_file, config_file))
+                run_paths.append((self._select_source(data_file, source), config_file))
 
         return run_paths
+
+    @staticmethod
+    def _flatten_rollout(rollout: dict, config: dict) -> tuple[dict, int]:
+        """
+        Flattens a `_rollout.pt` run, shaped (n_envs, n_samples, ...), into the
+        same (N, ...) layout `_extract_sample_in_pxl` expects from a legacy
+        `_data.pt` run. Every push is kept (including ones where the plate
+        didn't fully reach its target) since the resulting state is still
+        valid dynamics data.
+        """
+        n_envs = config["statistics"]["n_envs"]
+        n_samples = config["statistics"]["samples_per_env"]
+        num_transitions = n_envs * n_samples
+        flat = {
+            key: rollout[key].reshape(num_transitions, *rollout[key].shape[2:])
+            for key in ("states", "states_", "p_starts", "p_stops", "angles")
+        }
+        return flat, num_transitions
 
     @classmethod
     def _filter_split(cls, run_files: list[tuple[Path, Path]], split: str, val_pct: int, test_pct: int) -> list[tuple[Path, Path]]:

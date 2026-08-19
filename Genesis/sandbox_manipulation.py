@@ -4,9 +4,35 @@ import numpy as np
 import yaml
 from utilities.materials import *
 from pathlib import Path
-import os
 import math
 import torch
+
+# Pose of "Camera_main" in ../cloudgripper_scene.xml, relative to "Ground_plate"
+# (which sits at that file's world origin with identity orientation, so this is
+# just Camera_main's own <camera pos=... quat=.../> values). Reused here as the
+# camera's pose relative to the center of this box's own ground plate, which is
+# likewise placed at (0, 0, 0) - see add_box_entity(pos=(0, 0, 0), ...) below.
+_CLOUDGRIPPER_CAMERA_MAIN_POS = (0.14519381523132324, -0.0004741400480270386, 0.12123201787471771)
+_CLOUDGRIPPER_CAMERA_MAIN_QUAT_WXYZ = (0.607417, 0.361999, 0.361999, 0.607417)
+_CLOUDGRIPPER_CAMERA_MAIN_FOVY = 90  # MuJoCo fovy is vertical FOV in degrees, same convention Genesis's `fov` uses
+
+
+def _mujoco_camera_to_lookat(pos, quat_wxyz):
+    """
+    Converts a MuJoCo <camera pos=... quat=.../> pose into Genesis's
+    add_camera(pos=..., lookat=..., up=...) convention. MuJoCo cameras look
+    down their local -Z axis with local +Y as up.
+    """
+    w, x, y, z = quat_wxyz
+    rot = np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y)],
+        [2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)],
+    ])
+    forward = rot @ np.array([0.0, 0.0, -1.0])
+    up = rot @ np.array([0.0, 1.0, 0.0])
+    pos = np.array(pos)
+    return tuple(pos), tuple(pos + forward), tuple(up)
 
 
 class SandboxManipulation:
@@ -55,15 +81,34 @@ class SandboxManipulation:
         # PARAMETERS FOR TRAINING
         self._wall_thickness = self._box_params.get('wall_thickness', 0.02)
         self._granular_vol = self._material_params.get('vol', [0.27, 0.27, 0.1])
-        
+
+        # Box height auto-adjusts to the particle size, so a resting monolayer never
+        # sticks out above the walls no matter what --particle-sizes is swept over.
+        particle_size = self._sampled_params.get(
+            "particle_size",
+            self._material_params["particle_size"],
+        )
+        self._box_params["vol"][2] = self._wall_thickness + max_particle_height(
+            shape=self._material_params["shape"],
+            particle_size=particle_size,
+            num_particles=self._material_params["n_particles"],
+        )
+
         self._settle_steps = 200
         self._goal_threshold = 0.001
         
         self._debug = debug
         self._viewer_type = viewer_type
-        
+
         # Multi-environment settings
         self._n_envs = n_envs
+
+        # Optional per-env camera rendering, saved into "_rollout.pt" files
+        self._render_images = bool(self._config["data_collection"].get("render_images", False))
+        self._render_resolution = tuple(
+            self._config["data_collection"].get("render_resolution", (128, 128))
+        )
+        self._cameras = []
 
         self._init_scene()
         self._add_entities()
@@ -183,13 +228,17 @@ class SandboxManipulation:
                 pos=(0, 0, 0),
                 size=(width, depth, self._wall_thickness),
             ),
+            # front/back walls are extended by 2*wall_thickness in y so they cover the
+            # corners too (left/right walls are sized to fit snugly between them) -
+            # otherwise each corner has a wall_thickness x wall_thickness hole straight
+            # through to the outside, invisible from directly above but obvious at an angle
             "front_wall" : add_box_entity(
                 pos=(-(width+self._wall_thickness)/2, 0, (height-self._wall_thickness)/2),
-                size=(self._wall_thickness, depth, height),
+                size=(self._wall_thickness, depth + 2 * self._wall_thickness, height),
             ),
             "back_wall" : add_box_entity(
                 pos=((width+self._wall_thickness)/2, 0, (height-self._wall_thickness)/2),
-                size=(self._wall_thickness, depth, height),
+                size=(self._wall_thickness, depth + 2 * self._wall_thickness, height),
             ),
             "left_wall" : add_box_entity(
                 pos=(0, (depth+self._wall_thickness)/2, (height-self._wall_thickness)/2),
@@ -227,8 +276,28 @@ class SandboxManipulation:
             num_particles=self._material_params["n_particles"],
             particle_size=particle_size,
             wall_thickness=self._wall_thickness,
-        )      
+            box_height=height,
+        )
         self._config["data_collection"]["sampled"].update({"particle_sizes": particle_sizes})
+
+        # add one camera per env (Genesis renders per env_idx, not batched), posed like
+        # cloudgripper_scene.xml's "Camera_main" relative to its ground plate's center
+        if self._render_images:
+            cam_pos, cam_lookat, cam_up = _mujoco_camera_to_lookat(
+                _CLOUDGRIPPER_CAMERA_MAIN_POS, _CLOUDGRIPPER_CAMERA_MAIN_QUAT_WXYZ
+            )
+            self._cameras = [
+                self._scene.add_camera(
+                    res=self._render_resolution,
+                    pos=cam_pos,
+                    lookat=cam_lookat,
+                    up=cam_up,
+                    fov=_CLOUDGRIPPER_CAMERA_MAIN_FOVY,
+                    GUI=False,
+                    env_idx=env_idx,
+                )
+                for env_idx in range(self._n_envs)
+            ]
 
     def _save_data(self, path : str | Path, num : int, flat_success_mask : torch.Tensor, max_samples : int):
         """
@@ -283,6 +352,36 @@ class SandboxManipulation:
         torch.save(valid_data, str(path / f"_{num}_data.pt"))
         torch.save(failed_data, str(path / f"_{num}_failed.pt"))
 
+    def _save_rollout(self, path: str | Path, num: int):
+        """
+        Save the un-flattened, per-env rollout: buffers are collected as
+        (n_samples, n_envs, ...) with no reshuffling between samples, so each
+        env's n_samples steps form one continuous multi-frame trajectory.
+
+        Unlike `_save_data`, samples are NOT dropped based on `success_mask`
+        (a "failed" step just means the plate didn't reach its exact target;
+        the resulting state is still valid dynamics data) and env/step order
+        is preserved so downstream consumers can reconstruct trajectories.
+        """
+        path = Path(path)
+
+        def to_cpu(t):
+            return t.detach().transpose(0, 1).to('cpu').contiguous()
+
+        rollout_data = {
+            "states": to_cpu(self._collection_buffers["states"]),
+            "states_": to_cpu(self._collection_buffers["states_"]),
+            "p_starts": to_cpu(self._collection_buffers["p_starts"]),
+            "p_stops": to_cpu(self._collection_buffers["p_stops"]),
+            "angles": to_cpu(self._collection_buffers["sample_angles"]),
+            "success_mask": to_cpu(self._collection_buffers["success_mask"]),
+        }
+        if self._render_images:
+            rollout_data["frames"] = to_cpu(self._collection_buffers["frames"])
+            rollout_data["frames_"] = to_cpu(self._collection_buffers["frames_"])
+
+        torch.save(rollout_data, str(path / f"_{num}_rollout.pt"))
+
     def _save_config(
             self,
             path : str | Path,
@@ -303,6 +402,14 @@ class SandboxManipulation:
             "sample_angles" : torch.empty((n_samples, self._n_envs), device=gs.device),
             "success_mask" : torch.empty((n_samples, self._n_envs), dtype=torch.bool, device=gs.device),
         }
+        if self._render_images:
+            h, w = self._render_resolution
+            self._collection_buffers["frames"] = torch.empty(
+                (n_samples, self._n_envs, h, w, 3), dtype=torch.uint8, device='cpu'
+            )
+            self._collection_buffers["frames_"] = torch.empty(
+                (n_samples, self._n_envs, h, w, 3), dtype=torch.uint8, device='cpu'
+            )
 
     @staticmethod
     def load_data(path: str | Path, split: str = "valid"):
@@ -535,8 +642,16 @@ class SandboxManipulation:
 
         lower = inner_min + collision_half_extents
         upper = inner_max - collision_half_extents
-        if (upper < lower).any():
-            raise ValueError("At least one particle is too large to fit inside the box.")
+        fit_eps = 1e-6  # tolerance for float32 rounding when box height is an exact fit
+        if (upper[:, 2] < lower[:, 2] - fit_eps).any():
+            shortfall = float((lower[:, 2] - upper[:, 2]).max())
+            raise ValueError(
+                f"Box height is too small for these particles: particles would stick out "
+                f"of the box in z. Box height must be at least wall_thickness + particle "
+                f"height (short by {shortfall:.4f}m)."
+            )
+        if (upper[:, :2] < lower[:, :2]).any():
+            raise ValueError("At least one particle is too large to fit inside the box in x/y.")
 
         for particle_idx_tensor in order:
             particle_idx = int(particle_idx_tensor.item())
@@ -674,6 +789,20 @@ class SandboxManipulation:
 
     def _get_particle_quats(self):
         return self._scene.rigid_solver.get_links_quat(links_idx=self._particle_links_idx)
+
+    def _render_all_envs(self) -> torch.Tensor:
+        """
+        Renders one RGB frame per env from each env's top-down camera.
+
+        Genesis cameras are bound to a single env_idx at creation time and
+        cam.render() is not batched across envs, so this issues one render
+        call per env.
+
+        Returns:
+            uint8 tensor of shape [n_envs, H, W, 3]
+        """
+        frames = [cam.render()[0] for cam in self._cameras]
+        return torch.from_numpy(np.stack(frames, axis=0)).to(torch.uint8)
 
     def update_material_state(self, store_other=False):
         """
@@ -940,6 +1069,13 @@ class SandboxManipulation:
 
 
             self._collection_buffers["states"][sample_idx].copy_(self._particle_state)
+            if self._render_images:
+                if sample_idx == 0:
+                    self._collection_buffers["frames"][sample_idx] = self._render_all_envs()
+                else:
+                    # no reshuffle happens between samples, so this step's "before" frame
+                    # is exactly the previous step's "after" frame - no need to re-render
+                    self._collection_buffers["frames"][sample_idx] = self._collection_buffers["frames_"][sample_idx - 1]
 
             p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
             p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
@@ -950,14 +1086,16 @@ class SandboxManipulation:
                 p_stop,
                 angle,
             )
-            
+
             self.update_material_state()
 
-            self._collection_buffers["states_"][sample_idx].copy_(self._particle_state)   
+            self._collection_buffers["states_"][sample_idx].copy_(self._particle_state)
             self._collection_buffers["p_starts"][sample_idx] = p_start
             self._collection_buffers["p_stops"][sample_idx] = p_stop
             self._collection_buffers["sample_angles"][sample_idx] = angle
             self._collection_buffers["success_mask"][sample_idx] = reached_goal
+            if self._render_images:
+                self._collection_buffers["frames_"][sample_idx] = self._render_all_envs()
             if self._debug and torch.equal(self._collection_buffers["states"][sample_idx], self._collection_buffers["states_"][sample_idx]):
                 print("State did not change")
             
@@ -984,11 +1122,14 @@ class SandboxManipulation:
         full_path = base_dir / path
         Path.mkdir(full_path, parents=True, exist_ok=True)
 
-        # look for number of runs in existing dict
-        n_runs = int(len([name for name in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, name))])/3)
-        
+        # look for number of runs in existing dir: one config file is saved per run regardless
+        # of how many other files accompany it, so count those rather than dividing the total
+        # file count by a fixed per-run file count (which broke when _rollout.pt was added).
+        n_runs = len(list(full_path.glob("_*_config.yaml")))
+
         self._save_config(full_path, n_runs)
         self._save_data(full_path, n_runs, flat_success_mask, max_samples)
+        self._save_rollout(full_path, n_runs)
         self._log(f"Material batch finished. Run {n_runs} saved to {full_path}.")
 
     def destroy(self):
