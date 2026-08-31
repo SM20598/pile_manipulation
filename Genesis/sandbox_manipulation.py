@@ -548,6 +548,64 @@ class SandboxManipulation:
             self._sampled_params["density"] = particle_densities.tolist()
         self._sampled_params["box_friction"] = box_friction
 
+    def _particle_shape_extents(self):
+        """
+        Returns (half_extents, placement_half_extents, collision_half_extents),
+        each (n_particles, 3) - shared sizing preamble used by every particle
+        placement method (shuffle_particles, arrange_particles_in_area, ...).
+        """
+        size_values = self._sampled_params.get("particle_sizes", None)
+        if size_values is None:
+            size_values = [
+                particle.morph.size if hasattr(particle.morph, "size")
+                else (particle.morph.radius * 2, particle.morph.radius * 2, particle.morph.height)
+                if hasattr(particle.morph, "height") and hasattr(particle.morph, "radius")
+                else (particle.morph.radius * 2,) * 3
+                for particle in self.material
+            ]
+        sizes = torch.as_tensor(size_values, dtype=torch.float32, device=gs.device)
+        half_extents = sizes * 0.5
+
+        # For cubes, a random yaw rotation up to 45° increases the xy footprint by up to sqrt(2).
+        # Use conservative collision extents so placed cubes don't overlap after rotation is applied.
+        is_cube = torch.tensor(
+            [hasattr(p.morph, "size") for p in self.material],
+            dtype=torch.float32, device=gs.device,
+        )
+        xy_scale = 1.0 + (math.sqrt(2) - 1.0) * is_cube  # sqrt(2) for cubes, 1.0 for others
+        collision_half_extents = half_extents.clone()
+        collision_half_extents[:, :2] = half_extents[:, :2] * xy_scale.unsqueeze(1)
+        is_cylinder = torch.tensor(
+            [hasattr(p.morph, "height") and hasattr(p.morph, "radius") for p in self.material],
+            dtype=torch.bool, device=gs.device,
+        )
+        placement_half_extents = half_extents.clone()
+        if bool(is_cylinder.any().item()):
+            cylinder_half_extent = half_extents[is_cylinder].max(dim=1).values
+            placement_half_extents[is_cylinder] = cylinder_half_extent.unsqueeze(1).expand(-1, 3)
+            collision_half_extents[is_cylinder] = placement_half_extents[is_cylinder]
+        return half_extents, placement_half_extents, collision_half_extents
+
+    def _box_inner_bounds(self):
+        width, depth, height = self._box_params["vol"]
+        wall = float(self._wall_thickness)
+        inner_min = torch.tensor([-width / 2, -depth / 2, wall / 2], device=gs.device)
+        inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
+        return inner_min, inner_max
+
+    def _set_particle_positions(self, positions, quats):
+        """positions, quats: (n_envs, n_particles, 3/4). Teleports + zeros velocity."""
+        envs_idx = torch.arange(self._n_envs, device=gs.device)
+        for particle_idx, particle in enumerate(self.material):
+            particle.set_pos(positions[:, particle_idx, :].contiguous(), envs_idx=envs_idx)
+            particle.set_quat(quats[:, particle_idx, :].contiguous(), envs_idx=envs_idx)
+        if self._particle_dofs_idx.numel() > 0:
+            self._scene.rigid_solver.set_dofs_velocity(
+                torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
+                dofs_idx=self._particle_dofs_idx,
+                skip_forward=True,
+            )
+
     def shuffle_particles(self):
         n_particles = len(self.material)
         if n_particles == 0:
@@ -556,41 +614,8 @@ class SandboxManipulation:
         max_retries = 10
         for attempt in range(max_retries):
             try:
-                size_values = self._sampled_params.get("particle_sizes", None)
-                if size_values is None:
-                    size_values = [
-                        particle.morph.size if hasattr(particle.morph, "size")
-                        else (particle.morph.radius * 2, particle.morph.radius * 2, particle.morph.height)
-                        if hasattr(particle.morph, "height") and hasattr(particle.morph, "radius")
-                        else (particle.morph.radius * 2,) * 3
-                        for particle in self.material
-                    ]
-                sizes = torch.as_tensor(size_values, dtype=torch.float32, device=gs.device)
-                half_extents = sizes * 0.5
-
-                # For cubes, a random yaw rotation up to 45° increases the xy footprint by up to sqrt(2).
-                # Use conservative collision extents so placed cubes don't overlap after rotation is applied.
-                is_cube = torch.tensor(
-                    [hasattr(p.morph, "size") for p in self.material],
-                    dtype=torch.float32, device=gs.device,
-                )
-                xy_scale = 1.0 + (math.sqrt(2) - 1.0) * is_cube  # sqrt(2) for cubes, 1.0 for others
-                collision_half_extents = half_extents.clone()
-                collision_half_extents[:, :2] = half_extents[:, :2] * xy_scale.unsqueeze(1)
-                is_cylinder = torch.tensor(
-                    [hasattr(p.morph, "height") and hasattr(p.morph, "radius") for p in self.material],
-                    dtype=torch.bool, device=gs.device,
-                )
-                placement_half_extents = half_extents.clone()
-                if bool(is_cylinder.any().item()):
-                    cylinder_half_extent = half_extents[is_cylinder].max(dim=1).values
-                    placement_half_extents[is_cylinder] = cylinder_half_extent.unsqueeze(1).expand(-1, 3)
-                    collision_half_extents[is_cylinder] = placement_half_extents[is_cylinder]
-
-                width, depth, height = self._box_params["vol"]
-                wall = float(self._wall_thickness)
-                inner_min = torch.tensor([-width / 2, -depth / 2, wall / 2], device=gs.device)
-                inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
+                half_extents, placement_half_extents, collision_half_extents = self._particle_shape_extents()
+                inner_min, inner_max = self._box_inner_bounds()
                 positions = self._sample_nonoverlapping_particle_positions(
                     half_extents=half_extents,
                     placement_half_extents=placement_half_extents,
@@ -599,16 +624,11 @@ class SandboxManipulation:
                     inner_max=inner_max,
                 )
 
-                envs_idx = torch.arange(self._n_envs, device=gs.device)
-                for particle_idx, particle in enumerate(self.material):
-                    particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
-                    particle.set_quat(self._random_particle_quats(particle, self._n_envs), envs_idx=envs_idx)
-                if self._particle_dofs_idx.numel() > 0:
-                    self._scene.rigid_solver.set_dofs_velocity(
-                        torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
-                        dofs_idx=self._particle_dofs_idx,
-                        skip_forward=True,
-                    )
+                quats = torch.stack(
+                    [self._random_particle_quats(particle, self._n_envs) for particle in self.material],
+                    dim=1,
+                )
+                self._set_particle_positions(positions, quats)
                 # Success, break out of retry loop
                 break
             except RuntimeError as e:
@@ -623,6 +643,183 @@ class SandboxManipulation:
                     continue
                 else:
                     raise
+
+    def set_particle_state(self, state: torch.Tensor):
+        """
+        Hard-teleport particles to an explicit state, bypassing physics (same
+        set_pos/set_quat mechanism shuffle_particles() uses for random
+        placement). Does not settle - call update_material_state() afterwards
+        if you want contacts/gravity resolved before reading state or
+        rendering.
+
+        Args:
+            state: (n_particles, 7) or (n_envs, n_particles, 7) tensor of
+                [x, y, z, qw, qx, qy, qz]. A 2D input is broadcast to all envs.
+        """
+        state = state.to(device=gs.device, dtype=torch.float32)
+        if state.ndim == 2:
+            state = state.unsqueeze(0).expand(self._n_envs, -1, -1)
+        self._set_particle_positions(state[..., 0:3], state[..., 3:7])
+
+    def default_area_radius(self, size_fraction: float = 0.9) -> float:
+        """
+        The target-area radius arrange_particles_in_area() computes when
+        `radius` isn't given directly - exposed so callers that need to know
+        the *intended* target region (e.g. a success check) can reference
+        the same deterministic, box-geometry-derived value directly, rather
+        than re-deriving it from a particular placement's noisy realized
+        (settled, possibly overlap-perturbed) particle positions.
+        """
+        _, _, collision_half_extents = self._particle_shape_extents()
+        _, box_inner_max = self._box_inner_bounds()
+        max_half = float(collision_half_extents[:, :2].max().item())
+        box_half = min(float(box_inner_max[0].item()), float(box_inner_max[1].item())) - max_half
+        return max(box_half * size_fraction, 0.0)
+
+    def arrange_particles_in_area(
+        self,
+        center_xy=(0.0, 0.0),
+        radius: float | None = None,
+        size_fraction: float = 0.9,
+    ) -> float:
+        """
+        Places all particles inside a circular target area, non-overlapping
+        wherever a spot can be found - the goal configuration for a "gather
+        material into a target zone" planning task (particles clustered
+        within a region, not arranged along its boundary - see the old
+        arrange_particles_circle approach, removed because a boundary ring
+        made an unnecessarily hard, visually unclean goal). All envs get the
+        same arrangement.
+
+        n_particles~30 cube particles at this box/particle size already pack
+        close to the *entire* box's capacity (that's what shuffle_particles()
+        relies on for the full-box scatter) - a disk has less area than the
+        box that circumscribes it (pi/4 of it), so even radius=(the box's own
+        half-extent) is packing-tight, and a *smaller* target area (the point
+        of this method - a full-box-sized target wouldn't force any real
+        gathering, since a random scatter already roughly fills the box) is
+        tighter still. Any particle that can't find a non-overlapping spot is
+        dropped in anyway (may overlap) - call update_material_state()
+        afterwards to let contact resolution settle it, same approximation
+        shuffle_particles() would need if you pushed *it* this close to
+        capacity. Counterintuitively, a *smaller* size_fraction doesn't
+        reliably yield a tighter settled result: more overlap-fallback
+        particles means more contact-driven expansion, which can push the
+        actual settled spread out beyond the intended radius (verified
+        empirically - size_fraction=0.7 settled wider than 0.9 or 1.0 did).
+        The default size_fraction=0.9 was picked for a good balance: clearly
+        smaller than the box's own corner-to-center reach (which a random
+        scatter's own radial spread includes), while still keeping most
+        particles' non-overlap-fallback placement intact.
+
+        Args:
+            center_xy: target-area center in box-local meters ((0, 0) = box center).
+            radius: target-area radius in meters. If None, computed from
+                `size_fraction` of the box's usable half-extent.
+            size_fraction: fraction of the box's usable half-extent to use
+                when `radius` isn't given directly.
+
+        Returns:
+            The radius actually used (meters).
+        """
+        n_particles = len(self.material)
+        if n_particles == 0:
+            return 0.0
+
+        half_extents, placement_half_extents, collision_half_extents = self._particle_shape_extents()
+        box_inner_min, box_inner_max = self._box_inner_bounds()
+
+        if radius is None:
+            radius = self.default_area_radius(size_fraction)
+
+        center = torch.tensor(center_xy, dtype=torch.float32, device=gs.device)
+        floor_z = box_inner_min[2] + placement_half_extents[:, 2] + 1e-3
+
+        positions = self._sample_positions_in_disk(
+            half_extents=half_extents,
+            collision_half_extents=collision_half_extents,
+            center=center,
+            radius=radius,
+            floor_z=floor_z,
+        )
+        quats = torch.stack(
+            [self._random_particle_quats(particle, self._n_envs) for particle in self.material],
+            dim=1,
+        )
+        self._set_particle_positions(positions, quats)
+        return radius
+
+    def _sample_positions_in_disk(
+        self,
+        *,
+        half_extents: torch.Tensor,
+        collision_half_extents: torch.Tensor,
+        center: torch.Tensor,
+        radius: float,
+        floor_z: torch.Tensor,
+        min_gap: float = 1e-3,
+    ) -> torch.Tensor:
+        """
+        Like _sample_nonoverlapping_particle_positions, but samples candidates
+        uniformly within a disk (uniform-area via sqrt(rand)*radius) instead
+        of a rectangle, and never raises: a particle that can't find a
+        non-overlapping spot after the retry budget is placed at a random
+        (possibly overlapping) spot in the disk rather than failing outright.
+        """
+        n_particles = half_extents.shape[0]
+        positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
+        placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
+        order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
+        candidate_batch = max(1024, min(4096, 64 * n_particles))
+        n_overlapping = 0
+
+        for particle_idx_tensor in order:
+            particle_idx = int(particle_idx_tensor.item())
+            max_particle_half = float(collision_half_extents[particle_idx, :2].max().item())
+            placement_radius = max(radius - max_particle_half, 1e-6)
+            active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
+
+            for _ in range(256):
+                active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+                if active_idx.numel() == 0:
+                    break
+                r = placement_radius * torch.sqrt(
+                    torch.rand((active_idx.numel(), candidate_batch), device=gs.device)
+                )
+                theta = torch.rand((active_idx.numel(), candidate_batch), device=gs.device) * (2 * math.pi)
+                candidate_xy = center + torch.stack([r * torch.cos(theta), r * torch.sin(theta)], dim=-1)
+                placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
+                if placed_idx.numel() == 0:
+                    valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
+                else:
+                    delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
+                    min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
+                    valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
+                has_valid = valid.any(dim=1)
+                if has_valid.any():
+                    accepted = active_idx[has_valid]
+                    first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
+                    positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
+                    positions[accepted, particle_idx, 2] = floor_z[particle_idx]
+                    active[accepted] = False
+
+            if active.any():
+                # no non-overlapping spot found for this particle in some envs -
+                # drop it in anyway; update_material_state()'s settle pass will
+                # let contact resolution push things apart.
+                n_overlapping += int(active.sum().item())
+                leftover_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+                r = placement_radius * torch.sqrt(torch.rand(leftover_idx.numel(), device=gs.device))
+                theta = torch.rand(leftover_idx.numel(), device=gs.device) * (2 * math.pi)
+                xy = center + torch.stack([r * torch.cos(theta), r * torch.sin(theta)], dim=-1)
+                positions[leftover_idx, particle_idx, :2] = xy
+                positions[leftover_idx, particle_idx, 2] = floor_z[particle_idx]
+            placed[particle_idx] = True
+
+        if n_overlapping > 0:
+            print(f"arrange_particles_in_area: {n_overlapping} particle(s) placed with overlap at this radius "
+                  f"({radius:.4f}m) - relying on settle physics to resolve it.")
+        return positions
 
     def _sample_nonoverlapping_particle_positions(
         self,
@@ -945,22 +1142,83 @@ class SandboxManipulation:
             )
             self._step_scene()
 
+    def _sample_density_weighted_xy(
+            self,
+            particle_xy: torch.Tensor,
+            n_samples: int,
+            grid_res: int,
+            density_uniform_mix: float,
+        ) -> torch.Tensor:
+        """
+        particle_xy: (n_envs, n_particles, 2) current particle positions.
+        Bins particles into a grid_res x grid_res grid over the box, adds
+        density_uniform_mix as a per-cell pseudo-count (so empty cells stay
+        reachable - e.g. mix=1.0 means a cell with k particles is k+1x as
+        likely as a totally empty one, and an all-empty box samples
+        uniformly), then draws a cell per (env, sample) proportional to that
+        density and a uniform-random offset within it.
+
+        Returns (n_envs * n_samples, 2) xy samples, flattened env-major to
+        match generate_action_samples' n_total convention.
+        """
+        device = particle_xy.device
+        vol_x, vol_y, _ = self._granular_vol
+        cell_x, cell_y = vol_x / grid_res, vol_y / grid_res
+
+        col = ((particle_xy[..., 0] + vol_x / 2) / cell_x).long().clamp(0, grid_res - 1)
+        row = ((particle_xy[..., 1] + vol_y / 2) / cell_y).long().clamp(0, grid_res - 1)
+        cell_idx = row * grid_res + col  # (n_envs, n_particles)
+
+        counts = torch.zeros(self._n_envs, grid_res * grid_res, device=device)
+        counts.scatter_add_(1, cell_idx, torch.ones_like(cell_idx, dtype=torch.float32))
+        probs = (counts + density_uniform_mix)
+        probs = probs / probs.sum(dim=1, keepdim=True)
+
+        chosen = torch.multinomial(probs, n_samples, replacement=True)  # (n_envs, n_samples)
+        chosen_row = torch.div(chosen, grid_res, rounding_mode="floor")
+        chosen_col = chosen % grid_res
+
+        jitter = torch.rand(self._n_envs, n_samples, 2, device=device)
+        x = -vol_x / 2 + (chosen_col.float() + jitter[..., 0]) * cell_x
+        y = -vol_y / 2 + (chosen_row.float() + jitter[..., 1]) * cell_y
+
+        return torch.stack([x, y], dim=-1).reshape(self._n_envs * n_samples, 2)
+
     def generate_action_samples(
             self,
             n_samples: int,
+            particle_xy: torch.Tensor | None = None,
+            grid_res: int = 8,
+            density_uniform_mix: float = 1.0,
         ):
         """
         Generate random action samples for all environments.
-        
+
+        particle_xy: optional (n_envs, n_particles, 2) current particle
+            positions. When given, the push START position is sampled with
+            probability proportional to local particle density (see
+            _sample_density_weighted_xy) instead of uniformly at random - a
+            push starting in empty space never contacts any particle, and
+            empty space becomes increasingly common as a trajectory
+            progresses and particles consolidate (measured on the old
+            uniform sampler: ~1% of pushes moved no particle at step 0 of a
+            20-step trajectory, vs ~50% by step 19). STOP position and angle
+            are still sampled uniformly, so pushes can still redistribute
+            material into empty regions rather than only ever shuffling
+            already-dense cells. Pass the CURRENT particle state (updated
+            after the previous push), not a snapshot from episode start -
+            the whole point is tracking density as it evolves.
+            When None, falls back to the old fully-uniform behavior.
+
         Returns:
-            Tuple of (action_starts, action_stops, angles) each of shape [n_envs * n_samples, 3/1]
+            Tuple of (action_starts, action_stops, angles) each of shape [n_envs, n_samples, 3/1]
         """
         tool_length, tool_width, _ = self._plate_params["size"]
 
         # Generate samples for each environment
         n_total = self._n_envs * n_samples
         angles = (-torch.pi/2) + torch.rand(n_total, device=gs.device) * torch.pi
-        
+
         # Sampling dimensions in x and y from box center
         sample_space_x = self._granular_vol[0]/2 - (torch.cos(angles) * tool_length/2 + abs(torch.sin(angles)) * tool_width/2 + self._safety_margin)
         sample_space_y = self._granular_vol[1]/2 - (abs(torch.sin(angles)) * tool_length/2 + torch.cos(angles) * tool_width/2 + self._safety_margin)
@@ -968,15 +1226,24 @@ class SandboxManipulation:
         # Min and max coordinates
         low = torch.stack([-sample_space_x, -sample_space_y], axis=1)
         high = torch.stack([sample_space_x, sample_space_y], axis=1)
-        
+
         # Sample start and end positions
-        start_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
+        if particle_xy is not None:
+            start_samples = self._sample_density_weighted_xy(
+                particle_xy, n_samples, grid_res, density_uniform_mix
+            )
+            # density grid cells can fall just outside the angle-dependent
+            # safety margin near the box edge - clamp back into the same
+            # valid range uniform sampling was already restricted to.
+            start_samples = torch.max(torch.min(start_samples, high), low)
+        else:
+            start_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
         stop_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
         _z = torch.ones((n_total, 1), device=gs.device) * self._operation_height
-        
+
         action_starts = torch.cat((start_samples, _z), axis=1)
         action_stops = torch.cat((stop_samples, _z), axis=1)
-        
+
         # Reshape to [n_envs, n_samples, ...]
         action_starts = action_starts.reshape(self._n_envs, n_samples, 3)
         action_stops = action_stops.reshape(self._n_envs, n_samples, 3)
@@ -1060,9 +1327,6 @@ class SandboxManipulation:
         for buf in self._collection_buffers.values():
             buf.zero_()
         
-        # Generate random action samples per env
-        action_starts, action_stops, angles = self.generate_action_samples(n_samples)
-
         self.update_material_state()
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
@@ -1077,9 +1341,17 @@ class SandboxManipulation:
                     # is exactly the previous step's "after" frame - no need to re-render
                     self._collection_buffers["frames"][sample_idx] = self._collection_buffers["frames_"][sample_idx - 1]
 
-            p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
-            p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
-            angle = angles[:, sample_idx]              # [n_envs]
+            # Generate this step's action from the CURRENT particle state, not
+            # a snapshot from before the episode started - sampling all
+            # n_samples pushes upfront from the initial distribution meant
+            # later pushes (once particles had already been consolidated by
+            # earlier ones) increasingly swept through empty space.
+            action_starts, action_stops, angles = self.generate_action_samples(
+                1, particle_xy=self._particle_state[:, :, 0:2]
+            )
+            p_start = action_starts[:, 0, :]  # [n_envs, 3]
+            p_stop = action_stops[:, 0, :]    # [n_envs, 3]
+            angle = angles[:, 0]              # [n_envs]
 
             reached_goal, p_stop = self.execute_action(
                 p_start,

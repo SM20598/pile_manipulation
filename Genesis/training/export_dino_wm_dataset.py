@@ -15,6 +15,7 @@
 import argparse
 import sys
 from pathlib import Path
+import re
 
 import torch
 import yaml
@@ -25,16 +26,43 @@ from dataset import PileSweepData  # noqa: E402
 
 def _resolve_input_path(path: str, data_root: Path) -> Path:
     path = Path(path)
+
     return path if path.is_absolute() else data_root / path
 
 
 def find_rollout_files(root: Path):
+    """
+    Find all rollout files named _[NUM]_rollout.pt, e.g.:
+
+        _0_rollout.pt
+        _1_rollout.pt
+        _25_rollout.pt
+        _1000_rollout.pt
+
+    The files are returned in numeric order.
+    """
+    pattern = re.compile(r"^_(\d+)_rollout\.pt$")
     files = []
-    for data_file in sorted(root.rglob("_*_rollout.pt")):
-        config_file = data_file.with_name(data_file.name.replace("_rollout.pt", "_config.yaml"))
+
+    for data_file in root.rglob("*_rollout.pt"):
+        match = pattern.match(data_file.name)
+        if match is None:
+            continue
+
+        config_file = data_file.with_name(
+            data_file.name.replace("_rollout.pt", "_config.yaml")
+        )
+
         if config_file.exists():
-            files.append((data_file, config_file))
-    return files
+            rollout_idx = int(match.group(1))
+            files.append((rollout_idx, data_file, config_file))
+
+    # Sort numerically rather than lexicographically:
+    # _2, _10 rather than _10, _2
+    files.sort(key=lambda x: x[0])
+
+    return [(data_file, config_file) for _, data_file, config_file in files]
+
 
 
 def make_rasterizer(config: dict, resolution_scale: float, soft_particle_occupancy: bool) -> PileSweepData:
@@ -81,18 +109,25 @@ def build_action_and_proprio(p_starts: torch.Tensor, p_stops: torch.Tensor, angl
     """
     p_starts/p_stops: (n_samples, 3), angles: (n_samples,).
 
-    Returns action (T, 4) = [x_start, y_start, x_end, y_end] of the push taken
-    FROM that frame (last frame has no push, so it's zero-padded), and
-    proprio (T, 3) = tool pose [x, y, angle] at that frame - the position the
-    plate is about to sweep from (last frame reuses the final push's stop
-    pose and angle, since no further push follows it).
+    Returns action (T, 5) = [x_start, y_start, x_end, y_end, angle] of the
+    push taken FROM that frame (last frame has no push, so it's
+    zero-padded), and proprio (T, 3) = tool pose [x, y, angle] at that frame
+    - the position the plate is about to sweep from (last frame reuses the
+    final push's stop pose and angle, since no further push follows it).
+
+    `angle` is the plate's own rotation about z, sampled independently from
+    the start->stop travel direction (see sandbox_manipulation.py's
+    generate_action_samples) - it's NOT recoverable from start/stop alone,
+    so it must be carried as its own action dimension rather than
+    reconstructed downstream via atan2(travel direction).
     """
     n_samples = p_starts.shape[0]
     T = n_samples + 1
 
-    action = torch.zeros((T, 4), dtype=torch.float32)
+    action = torch.zeros((T, 5), dtype=torch.float32)
     action[:n_samples, 0:2] = p_starts[:, 0:2]
     action[:n_samples, 2:4] = p_stops[:, 0:2]
+    action[:n_samples, 4] = angles
 
     proprio = torch.zeros((T, 3), dtype=torch.float32)
     proprio[:n_samples, 0:2] = p_starts[:, 0:2]

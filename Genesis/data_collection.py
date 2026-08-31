@@ -6,6 +6,7 @@ import argparse
 import itertools
 import yaml
 import numpy as np
+import torch
 from pathlib import Path
 
 from sandbox_manipulation import SandboxManipulation
@@ -16,7 +17,7 @@ from training import export_dino_wm_dataset
 ##################################
 BASIC_SETTING = "basic"
 DEFAULT_SHAPES = ["cube"]
-DEFAULT_NUM_PARTICLES = [30, 40]
+DEFAULT_NUM_PARTICLES = [30]
 PARTICLE_SIZES = np.linspace(0.005, 0.012, 5).tolist()
 
 PARTICLE_FRICTIONS = np.linspace(0.05, 0.5, 5).tolist()
@@ -25,7 +26,14 @@ BOX_FRICTION = np.linspace(0.05, 0.5, 4).tolist()
 PER_PARTICLE_VALUE_PROBABILITY = 0.5
 
 PARTICLE_SIZES = [0.012]
-PARTICLE_FRICTIONS = [0.12]
+# len(PARTICLE_FRICTIONS) = number of material-batches; total episodes =
+# that * --n-envs. All entries here are identical (0.12), so batches don't
+# actually vary material properties - this is purely a lever for total
+# episode count, with per-episode diversity coming from shuffle_particles()'
+# own randomness. x5 with --n-envs 100 = 500 episodes (confirmed n_envs=100
+# runs cleanly on this GPU, ~4.7GB peak vs 16.3GB total - far cheaper than
+# 100 batches * n_envs=10 for the same episode count).
+PARTICLE_FRICTIONS = [0.12] * 5
 PARTICLE_DENSITIES = [750]
 BOX_FRICTION = [0.12]
 PER_PARTICLE_VALUE_PROBABILITY = 0
@@ -183,6 +191,12 @@ def main():
                 sm.destroy()
 
                 if args.export_dino_wm:
+                    # gs.init() (inside SandboxManipulation.__init__) sets torch's
+                    # process-wide default device to cuda as a side effect; the
+                    # exporter's rasterizer allocates bare CPU tensors (it runs
+                    # cv2-based drawing on numpy views) and doesn't expect that
+                    # default - see the same fix in env/granular/granular_env.py.
+                    torch.set_default_device("cpu")
                     # matches how SandboxManipulation.collect_data_samples() resolved `path` above:
                     # relative to Genesis/, not Genesis/data/ (--output-root already includes "data/").
                     leaf_input_path = Path(__file__).parent / args.output_root / leaf_subpath
