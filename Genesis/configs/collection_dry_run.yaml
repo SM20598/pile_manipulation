@@ -1,0 +1,92 @@
+# Collection plan - consumed by Genesis/run_collection.py
+#
+#   cd Genesis
+#   python run_collection.py --plan configs/collection_dry_run.yaml
+#
+# A DRY RUN: one transition per env per particle count, to prove the pipeline
+# works end to end before committing to a long run. Raise `samples_per_env` and
+# `n_batches` to scale up; nothing else has to change.
+
+base_config: basic.yaml          # simulator settings (dt, solver, box, plate)
+output_root: data/dry_run
+
+material:
+  shape: cube
+
+  # 5 mm is the only size in the historical sweep where every count up to 200
+  # fits ONE layer of the 128 mm tray. Measured single-layer capacity is 225 at
+  # 5 mm, against 185 / 112 / 82 / 53 at 6.75 / 8.5 / 10.25 / 12 mm - so a
+  # larger particle is fine at small counts but cannot reach 200 without either
+  # a bigger tray or the stacked spawn in Genesis/layered/.
+  #
+  # The capacity that binds is the RESHUFFLE's, not creation's: creation clears
+  # size/2 while every reset clears size/2*sqrt(2), the footprint a cube sweeps
+  # at free yaw. A count that creates fine can still fail on the first reset.
+  # run_collection.py checks against the reshuffle figure for that reason.
+  particle_size: 0.005
+
+  # Constant physical parameters - the particle count is the only thing that
+  # varies across this sweep.
+  #
+  # Genesis combines contact friction as max(mu_a, mu_b), so the effective
+  # tool-contact friction is max(particle_friction, plate.friction). Both are
+  # 0.3 here, which makes it unambiguously 0.3 - see PORT_NOTES.md fix 3 for
+  # why that used to be silently 1.0.
+  particle_friction: 0.3
+  particle_density: 1000.0
+  box_friction: 0.3
+
+plan:
+  # n=200 is 89% of a 5 mm layer's placement capacity, past the 70% point where
+  # the tool starts running out of anywhere to touch down. It is kept in the
+  # dry run deliberately, so the packing warning is exercised rather than
+  # theoretical - the run will say so and continue.
+  n_objects: [20, 50, 70, 100, 150, 200]
+
+  # Parallel envs per particle count.
+  #
+  # A single integer applies to every count; a mapping {count: envs} sets them
+  # individually; a PATH to a yaml written by a throughput benchmark lets the
+  # plan reference a measurement instead of copying numbers out of it and going
+  # stale. run_collection.py checks a referenced file's material against this
+  # plan's and warns if they diverge, because a throughput optimum does not
+  # transfer across materials.
+  #
+  # 2 here because a dry run is about correctness, not throughput, and a small
+  # env count keeps it short. There is no committed measured optimum for this
+  # machine - run tests/benchmarks/bench_performance.py to get one.
+  n_envs: 2
+
+  # Transitions per env per batch, and batches per count. Total transitions per
+  # count is n_envs * samples_per_env * n_batches.
+  samples_per_env: 1
+  n_batches: 1
+
+  # Settle N piles once per build, expand each by the tray's symmetry group
+  # (x8 for a square tray) and reset by restoring instead of re-settling.
+  # shuffle_particles() runs zero simulation steps, so all of a reset's cost is
+  # the settle that follows it.
+  #
+  # 2 for the dry run: each settle yields one state PER ENV, so this is already
+  # 2 x 2 x 8 = 32 distinct starts - enough to prove the mechanism. Raise for a
+  # real run.
+  state_library_settles: 2
+
+  # Touchdown pose sampling. "composed" lets the density-weighted sampler pick
+  # the neighbourhood and then moves the pose the shortest distance that makes
+  # it collision-free, which keeps density's spatial distribution while cutting
+  # blade-into-particle touchdowns. "auto" reproduces the previous behaviour.
+  start_sampling: composed
+
+  # Give every env in a batch the same push LENGTH for a given sample, keeping
+  # its own start, direction and yaw. sweep_steps is derived from the longest
+  # travel in the batch, so independent lengths make every env run for the
+  # longest one's duration. Costs the within-batch spread of one of five action
+  # dimensions and truncates pushes that would leave the sampling box.
+  shared_travel_distance: true
+
+  # Rendering is on by default and feeds the DINO/LeWM exporters. Off here:
+  # a dry run is checking the physics pipeline, and one camera per env makes it
+  # markedly slower for no benefit to that question.
+  render_images: false
+  export_dino_wm: false

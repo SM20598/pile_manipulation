@@ -210,6 +210,11 @@ class PileSweepData(Dataset):
         }
         return flat, num_transitions
 
+    # Below this many distinct physics groups in a folder, splits are taken at
+    # run granularity instead of physics granularity - see _filter_split. Three
+    # is the smallest count that can yield one group each for train/val/test.
+    MIN_GROUPS_TO_STRATIFY_BY_PHYSICS = 3
+
     @classmethod
     def _filter_split(cls, run_files: list[tuple[Path, Path]], split: str, val_pct: int, test_pct: int) -> list[tuple[Path, Path]]:
         split_by_file = {}
@@ -227,9 +232,39 @@ class PileSweepData(Dataset):
                 physics_groups.items(),
                 key=lambda item: hashlib.md5(item[0].encode()).hexdigest(),
             )
-            assignments = cls._assign_group_splits(len(groups), val_pct, test_pct)
-            for (_, group), assigned_split in zip(groups, assignments):
-                for data_file, _ in group:
+            if len(groups) >= cls.MIN_GROUPS_TO_STRATIFY_BY_PHYSICS:
+                # Enough distinct physics to hold some out entirely, which is
+                # the stronger guarantee: no physics setting appears in both
+                # train and val.
+                assignments = cls._assign_group_splits(len(groups), val_pct, test_pct)
+                for (_, group), assigned_split in zip(groups, assignments):
+                    for data_file, _ in group:
+                        split_by_file[data_file] = assigned_split
+            else:
+                # Too few physics groups to stratify by physics, so split by
+                # RUN instead. This is the normal case, not an edge case: a
+                # collection run holds physics fixed by default, so every run
+                # in the folder shares one physics key and the loop above
+                # would put all of them in "train" and leave val and test
+                # empty - `PileSweepData(..., split="val")` then raised
+                # ValueError("No configs found for dataset").
+                #
+                # The run is the right fallback unit. Runs are independent -
+                # separate shuffles, separate action draws - while samples
+                # WITHIN a run are a trajectory (sample i+1's state is sample
+                # i's next-state), so splitting any finer would put both ends
+                # of one transition on opposite sides of the split. Keeping
+                # runs intact avoids that.
+                #
+                # Sorted by a hash of the file NAME, not the full path, so the
+                # partition is identical on any machine and across the
+                # separate train/val/test constructions.
+                runs = sorted(
+                    (data_file for _, group in groups for data_file, _ in group),
+                    key=lambda path: hashlib.md5(path.name.encode()).hexdigest(),
+                )
+                assignments = cls._assign_group_splits(len(runs), val_pct, test_pct)
+                for data_file, assigned_split in zip(runs, assignments):
                     split_by_file[data_file] = assigned_split
 
         return [
@@ -592,6 +627,50 @@ class PileSweepData(Dataset):
             target[mask] = source[mask].to(torch.float32)
         else:
             target[mask] = float(drawing)
+
+    # ------------------------------------------------------------------ #
+    # Raw-sample accessors, used by the MPC-side baselines (MPC/dmdc_baseline.py).
+    # Purely additive: __getitem__ still returns rasterised grids, and nothing
+    # here changes what a training run sees. They exist because a linear /
+    # DMDc baseline needs the push in world metres, not painted into a channel.
+    # ------------------------------------------------------------------ #
+
+    def get_raw_action(self, idx: int) -> torch.Tensor:
+        """Raw world-frame push ``[sx, sy, ex, ey]`` in metres for sample ``idx``.
+
+        The plate start/stop before rasterisation into the input action
+        channel, recovered from the underlying run arrays.
+        """
+        run_idx = self._run_lookup[idx]
+        sample_index = idx - self._offsets[run_idx]
+        run = self.runs[run_idx]
+        p_start = run["p_starts"][sample_index]
+        p_stop = run["p_stops"][sample_index]
+        return torch.tensor(
+            [p_start[0], p_start[1], p_stop[0], p_stop[1]], dtype=torch.float32
+        )
+
+    def get_run_index(self, idx: int) -> int:
+        """Which run (data file) sample ``idx`` came from.
+
+        Samples sharing a run share nominal physics and particle geometry, and
+        are a trajectory: sample i+1's state is sample i's next-state. That is
+        why the run is the unit a split holds together (see _filter_split), and
+        it is what makes this usable as an episode id.
+
+        The index is **local to this instance** - it indexes ``self.runs``,
+        which only contains the files this split kept. Run 0 of the val set is
+        a different file from run 0 of the train set, so these are not
+        comparable across instances. Group by it, do not identify by it.
+        """
+        return self._run_lookup[idx]
+
+    @property
+    def workspace_bounds(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """``((x_min, y_min), (x_max, y_max))`` box extent in world metres,
+        centred on the origin - the same frame as ``get_raw_action``."""
+        x_dim, y_dim, _ = self.configs[0]["box"]["vol"]
+        return (-x_dim / 2.0, -y_dim / 2.0), (x_dim / 2.0, y_dim / 2.0)
 
     def _det_physics(self, config):
         self._physics[0] = (config["material"]["friction"] - 0.05) / (0.5  - 0.05)

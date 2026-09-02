@@ -14,18 +14,19 @@ member costs — twice over:
                   costs.
 
 Sampling each env's action independently therefore makes batching much worse
-than it needs to be. Measured at 100 objects (see
-tests/scaling_investigation/probe_action_coupling.py), going from 1 to 8 envs:
+than it needs to be, and the penalty splits into those two parts. The
+contact-complexity part is irreducible — it is a real property of simulating
+denser piles. The step-count part is pure waste, and is what this module
+removes: share one travel *distance* across the batch while every env keeps its
+own start point, direction and blade yaw.
 
-  identical action in every env    13.47 s -> 15.21 s   (1.13x for 8x the work)
-  independently sampled actions    13.34 s -> 40.17 s   (3.01x)
+Distance is one of five action dimensions and it still varies fully from batch
+to batch, so only its within-batch variance is given up — and that variance was
+buying nothing except a longer sweep for everybody.
 
-with the gap decomposing into 1.54x from step count and 1.72x from contact
-complexity. The step-count half is removable at almost no cost to the data:
-share one travel *distance* across the batch while every env keeps its own start
-point, direction and blade yaw. Distance is one of five action dimensions and it
-still varies fully from batch to batch — only its within-batch variance is given
-up, and that variance was buying nothing except a longer sweep for everybody.
+No speedup figure is quoted here. How the penalty splits, and what removing
+half of it is worth, depends on the machine, the backend, the env count and the
+pile density. Measure it with ``tests/benchmarks/bench_performance.py``.
 """
 
 from __future__ import annotations

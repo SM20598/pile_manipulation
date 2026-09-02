@@ -15,6 +15,7 @@ __pycache__/
 Genesis/data/dry_run/
 Genesis/data/ignore/
 Genesis/data/seedtest/
+Genesis/layered/data/
 outputs/
 
 # Rendered inspection videos. Regenerate with

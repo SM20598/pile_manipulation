@@ -1,9 +1,45 @@
+"""
+LAYERED VARIANT of Genesis/sandbox_manipulation.py.
+
+A deliberate copy rather than a subclass. The monolayer path is left exactly as
+upstream wrote it, because the two things that must change to stack particles -
+the box height and the creation-time placement - both happen inside `__init__`
+before `scene.build()`, and one of them lives in a module-level function that
+cannot be overridden at all.
+
+Everything here is identical to the original except:
+
+  1. imports - `materials_layered` instead of `utilities.materials`, plus the
+     parent directory on `sys.path` so the shared modules resolve.
+  2. `__init__` - resolves `material.n_layers` and sizes the box with
+     `stack_height()`; scales `_clearance_height` with the stack; warns if the
+     stack rises above the blade.
+  3. `_add_entities` - forwards `n_layers`.
+  4. `_sample_nonoverlapping_particle_positions` - packs each layer
+     independently (the one substantially rewritten method).
+  5. `_grid_particle_positions` - the fallback grid is per-layer.
+
+Nothing else. When upstream changes, diff the two files and re-apply; the
+regions above are the only ones expected to conflict.
+
+See Genesis/layered/README.md.
+"""
+
+import sys
+from pathlib import Path
+
+# The shared modules (state_library, placement_sampling, action_sampling,
+# utilities/) live one level up, in Genesis/. This file is run from
+# Genesis/layered/, so that directory is sys.path[0] and Genesis/ is not on the
+# path at all. Prepending it keeps every import flat, matching the convention
+# in the rest of the package.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import genesis as gs
 import genesis.utils.geom as gu 
 import numpy as np
 import yaml
-from utilities.materials import *
-from pathlib import Path
+from materials_layered import *
 import math
 import torch
 
@@ -92,16 +128,82 @@ class SandboxManipulation:
         self._wall_thickness = self._box_params.get('wall_thickness', 0.02)
         self._granular_vol = self._material_params.get('vol', [0.27, 0.27, 0.1])
 
-        # Box height auto-adjusts to the particle size, so a resting monolayer never
-        # sticks out above the walls no matter what --particle-sizes is swept over.
         particle_size = self._sampled_params.get(
             "particle_size",
             self._material_params["particle_size"],
         )
-        self._box_params["vol"][2] = self._wall_thickness + max_particle_height(
+
+        # How many stacked layers to spawn into. "auto" (the default) asks the
+        # planner for the fewest that will actually pack; an integer forces it.
+        #
+        # This has to be settled HERE, before _init_scene() and _add_entities(),
+        # because the tray walls are geometry: the box must already be tall
+        # enough when the scene is built. That is the whole reason this file is
+        # a copy - there is no seam to override later.
+        n_layers = self._material_params.get("n_layers", "auto")
+        if isinstance(n_layers, str):
+            if n_layers != "auto":
+                raise ValueError(
+                    f"material.n_layers must be a positive integer or 'auto', "
+                    f"got {n_layers!r}")
+            n_layers = plan_layers(
+                shape=self._material_params["shape"],
+                particle_size=particle_size,
+                num_particles=self._material_params["n_particles"],
+                granular_vol=self._granular_vol,
+                # The RESHUFFLE is what binds, and it bounds against box.vol
+                # (0.128) rather than material.vol (0.127) - see
+                # single_layer_capacity for why the reshuffle and not creation
+                # sets the ceiling.
+                box_xy=self._box_params["vol"][0],
+            )
+            self._log(f"n_layers=auto -> {n_layers} layer(s) for "
+                      f"{self._material_params['n_particles']} particles")
+        n_layers = int(n_layers)
+        if n_layers < 1:
+            raise ValueError(f"material.n_layers must be >= 1, got {n_layers}")
+        self._n_layers = n_layers
+        self._sampled_params["n_layers"] = n_layers
+
+        # Scale the blade to the stack it has to push.
+        #
+        # The blade's bottom edge is pinned to the resting particles' centre
+        # height (`_operation_height - plate.size[2]/2 == floor + size/2`), so
+        # its reach above the floor is `size/2 + plate.size[2]`. A settled pile
+        # of L layers stands `L * size` tall, so covering it needs
+        # `plate.size[2] >= size * (L - 0.5)`. At the stock 10 mm blade that
+        # holds only up to 2 layers of 5 mm cubes; everything coarser leaves
+        # the top of the pile untouched.
+        #
+        # Sized for the SETTLED pile, not the spawn stack. The spawn stack is
+        # taller (it carries a gap per layer) but nothing is ever pushed in
+        # that state - `execute_action` always descends onto a settled pile -
+        # and a blade sized for the spawn transient would be needlessly large.
+        # A larger blade is not free: it is heavier, and it sweeps a taller
+        # column of material, so this deliberately grows no more than it must.
+        if bool(self._plate_params.get("scale_height_with_layers", True)):
+            _ps_max = (particle_size if isinstance(particle_size, float)
+                       else max(particle_size))
+            _needed = _ps_max * (n_layers - 0.5)
+            _have = float(self._plate_params["size"][2])
+            if _needed > _have:
+                self._plate_params["size"] = list(self._plate_params["size"])
+                self._plate_params["size"][2] = _needed
+                self._log(
+                    f"plate height {_have*1000:.1f} -> {_needed*1000:.1f} mm to "
+                    f"reach the top of a {n_layers}-layer settled pile "
+                    f"({n_layers} x {_ps_max*1000:.2f} mm). Set "
+                    f"plate.scale_height_with_layers: false to keep the "
+                    f"configured height, accepting that the tool cannot touch "
+                    f"the upper {(_needed - _have)*1000:.1f} mm of the pile."
+                )
+
+        # Box height follows the stack rather than a single resting layer.
+        self._box_params["vol"][2] = self._wall_thickness + stack_height(
             shape=self._material_params["shape"],
             particle_size=particle_size,
             num_particles=self._material_params["n_particles"],
+            n_layers=n_layers,
         )
 
         # Configurable timing - read from simulation section so they can be
@@ -124,16 +226,15 @@ class SandboxManipulation:
         # the default here. Hitting the cap only warns, and silently records a
         # mid-motion state, which propagates because each transition's s is
         # the previous transition's s'.
-        # Warn before anything expensive happens if the tray is filled past the
-        # point where the tool still has room to act. This is a property of
-        # (size, count, tray) alone, so it is checked here rather than at the
-        # first reset - a build recompiles kernels and a collection costs far
-        # more again.
+        # Per-LAYER occupancy: stacking raises total capacity but each layer is
+        # still placed independently, and the action-space argument applies to
+        # the top layer the tool actually touches.
         check_packing_fraction(
             shape=self._material_params["shape"],
             particle_size=particle_size,
             num_particles=self._material_params["n_particles"],
             box_xy=self._box_params["vol"][0],
+            n_layers=self._n_layers,
             log=self._log,
         )
 
@@ -206,6 +307,40 @@ class SandboxManipulation:
         particle_size = self._material_params["particle_size"]
         p_height = particle_size/2 if isinstance(particle_size, float) else min(particle_size)/4
         self._operation_height = self._wall_thickness/2 + p_height + self._plate_params["size"][2]/2
+
+        # The tool rides at half a particle above the floor and is only
+        # plate.size[2] tall, so a tall enough stack rises above the blade's
+        # top edge and the upper layers are never touched by a push. Warn
+        # rather than adjust: raising the blade would change the physics of
+        # every transition, which is a modelling decision, not a fix.
+        _floor_z = self._wall_thickness / 2
+        _blade_top = self._operation_height + self._plate_params["size"][2] / 2
+        _stack_top = _floor_z + LAYER_GAP + self._n_layers * (
+            (particle_size if isinstance(particle_size, float)
+             else max(particle_size)) + LAYER_GAP)
+        _settled_top = _floor_z + self._n_layers * (
+            particle_size if isinstance(particle_size, float)
+            else max(particle_size))
+        if _settled_top > _blade_top + 1e-9:
+            self._log(
+                f"WARNING: a settled {self._n_layers}-layer pile stands to "
+                f"z={_settled_top*1000:.1f} mm but the blade's top edge is at "
+                f"{_blade_top*1000:.1f} mm, so its upper "
+                f"{(_settled_top - _blade_top)*1000:.1f} mm is never pushed. "
+                f"Raise plate.size[2], or leave "
+                f"plate.scale_height_with_layers on so it is sized "
+                f"automatically."
+            )
+        elif _stack_top > _blade_top + 1e-9:
+            self._log(
+                f"NOTE: the SPAWN stack reaches z={_stack_top*1000:.1f} mm, above "
+                f"the blade's top edge at {_blade_top*1000:.1f} mm, because each "
+                f"layer is dropped with a gap above the one below. The blade is "
+                f"sized for the SETTLED pile "
+                f"(z={_settled_top*1000:.1f} mm), which it covers, and nothing "
+                f"is pushed before the first settle - so this is a transient, "
+                f"not lost reach."
+            )
         
         # lift height for plate
         lift_height = self._box_params["vol"][2]
@@ -223,7 +358,10 @@ class SandboxManipulation:
         # a cube corner.
         _ps  = particle_size if isinstance(particle_size, float) else max(particle_size)
         _lift_h = self._box_params['vol'][2]          # full lift = box interior height
-        self._clearance_height     = max(0.008, 2.0 * _ps)
+        # Scales with the stack: the blade is teleported to this height above
+        # the operating height before the simulated descent begins, so it has
+        # to start above the TOP layer, not above a single one.
+        self._clearance_height     = max(0.008, (self._n_layers + 1.0) * _ps)
         self._clearance_ctrl_steps = max(10, int(round(
             self._pos_ctrl_steps * self._clearance_height / _lift_h)))
         self._clearance_offset = torch.zeros((self._n_envs, 3), device=gs.device)
@@ -390,21 +528,11 @@ class SandboxManipulation:
         # never read), and it is worth removing structurally rather than one
         # key at a time - a config that lies about what the simulation is doing
         # is far worse than one that complains.
-        # Rolling friction matters only for shapes that can roll, and it is
-        # not free (extra constraint rows per contact), so it defaults ON for
-        # spheres and OFF otherwise. A cube resists rotation with its faces;
-        # a sphere has nothing to resist with, and without this its settle
-        # does not converge - measured 3000 steps hitting the cap at 100
-        # spheres, against 230-560 with it on. An explicit value in
-        # rigid_options always wins.
-        _rolls = str(self._material_params.get("shape", "")).lower() in (
-            "sphere", "cylinder")
         _rigid_kwargs = {
             "iterations": 50, "ls_iterations": 50,
             "tolerance": 1e-6, "ls_tolerance": 0.01,
             "box_box_detection": False, "use_contact_island": False,
             "use_hibernation": False, "enable_multi_contact": True,
-            "enable_rolling_friction": _rolls,
             "max_collision_pairs": self._default_max_collision_pairs(),
         }
         _known = set(gs.options.RigidOptions.model_fields)
@@ -518,6 +646,7 @@ class SandboxManipulation:
             particle_size=particle_size,
             wall_thickness=self._wall_thickness,
             box_height=height,
+            n_layers=self._n_layers,
         )
         self._config["data_collection"]["sampled"].update({"particle_sizes": particle_sizes})
 
@@ -1073,33 +1202,12 @@ class SandboxManipulation:
         particle_densities = self._sample_particle_property(particle_density, min_value=gs.EPS)
         box_friction = max(float(setting["box_friction"]), 1e-2)
 
-        # Rolling friction: Genesis' own default is 1e-4, i.e. negligible, so a
-        # rolling shape needs a real value or the flag above buys nothing.
-        # Applied to the tray as well - a sphere rolls on the floor, not just
-        # on its neighbours. Only meaningful when enable_rolling_friction is
-        # on, which _init_scene decides from the particle shape.
-        rolling = self._material_params.get("rolling_friction", None)
-        # basic.yaml writes unset values as the literal `None`, which YAML
-        # loads as the STRING "None" - every other placeholder in that file is
-        # overwritten by data_collection before use, so this is the first one
-        # that has to cope with it.
-        if isinstance(rolling, str) and rolling.strip().lower() in ("none", "null", ""):
-            rolling = None
-        if rolling is None:
-            rolling = 0.3 if self._scene.rigid_options.enable_rolling_friction else None
-
         for particle_idx, particle in enumerate(self.material):
             particle.set_friction(float(particle_frictions[particle_idx]))
             self._set_particle_density_value(particle, float(particle_densities[particle_idx]))
-            if rolling is not None:
-                for link in particle.links:
-                    link.set_friction_rolling(float(rolling))
 
         for part in self.box_parts.values():
             part.set_friction(box_friction)
-            if rolling is not None:
-                for link in part.links:
-                    link.set_friction_rolling(float(rolling))
 
         # save to config dict
         self._material_params["friction"] = setting["particle_friction"]
@@ -1112,8 +1220,6 @@ class SandboxManipulation:
         if setting.get("sampled_particle_density") is not None:
             self._sampled_params["density"] = particle_densities.tolist()
         self._sampled_params["box_friction"] = box_friction
-        self._sampled_params["rolling_friction"] = (
-            float(rolling) if rolling is not None else 0.0)
 
     def _particle_shape_extents(self):
         """
@@ -1468,10 +1574,13 @@ class SandboxManipulation:
     ) -> torch.Tensor:
         n_particles = half_extents.shape[0]
         positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
-        placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
         order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
         candidate_batch = max(1024, min(4096, 64 * n_particles))
         min_gap = 1e-3
+        n_layers = getattr(self, "_n_layers", 1)
+        # Vertical pitch between layers: tall enough that the tallest particle
+        # in a layer clears the one below it.
+        layer_pitch = float(2.0 * placement_half_extents[:, 2].max().item()) + LAYER_GAP
 
         lower = inner_min + collision_half_extents
         upper = inner_max - collision_half_extents
@@ -1486,44 +1595,65 @@ class SandboxManipulation:
         if (upper[:, :2] < lower[:, :2]).any():
             raise ValueError("At least one particle is too large to fit inside the box in x/y.")
 
-        for particle_idx_tensor in order:
-            particle_idx = int(particle_idx_tensor.item())
-            active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
-            span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
-            z_pos = inner_min[2] + placement_half_extents[particle_idx, 2] + min_gap
-            for _ in range(128):
-                active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
-                if active_idx.numel() == 0:
-                    break
-                candidate_xy = (
-                    torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
-                    * span_xy
-                    + lower[particle_idx, :2]
-                )
-                placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
-                if placed_idx.numel() == 0:
-                    valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
-                else:
-                    delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
-                    min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
-                    valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
-                has_valid = valid.any(dim=1)
-                if has_valid.any():
-                    accepted = active_idx[has_valid]
-                    first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
-                    positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
-                    positions[accepted, particle_idx, 2] = z_pos
-                    active[accepted] = False
-            if active.any():
-                return self._grid_particle_positions(
-                    half_extents=half_extents,
-                    placement_half_extents=placement_half_extents,
-                    collision_half_extents=collision_half_extents,
-                    inner_min=inner_min,
-                    inner_max=inner_max,
-                    min_gap=min_gap,
-                )
-            placed[particle_idx] = True
+        # The stack must fit the interior, checked before any work is done.
+        stack_top = float(inner_min[2]) + min_gap + n_layers * layer_pitch
+        if stack_top > float(inner_max[2]) + 1e-6:
+            raise ValueError(
+                f"{n_layers} stacked layers need {stack_top:.4f} m of box interior "
+                f"but only {float(inner_max[2]):.4f} m is available (walls are "
+                f"{self._box_params['vol'][2]:.3f} m tall). This should not happen "
+                f"when the box height came from stack_height() - check that "
+                f"material.n_layers matches the value the scene was built with."
+            )
+
+        # Each layer is packed independently. Overlap is only a constraint
+        # WITHIN a layer, since layers are separated in z, so `placed` is reset
+        # per layer - which is exactly what lets the total exceed the
+        # single-layer capacity. The order is strided so every layer gets a
+        # comparable mix of particle sizes rather than the largest all landing
+        # in layer 0.
+        for layer_idx in range(n_layers):
+            layer_order = order[layer_idx::n_layers]
+            placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
+            layer_z = inner_min[2] + min_gap + layer_idx * layer_pitch
+            for particle_idx_tensor in layer_order:
+                particle_idx = int(particle_idx_tensor.item())
+                active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
+                span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
+                z_pos = layer_z + placement_half_extents[particle_idx, 2]
+                for _ in range(128):
+                    active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+                    if active_idx.numel() == 0:
+                        break
+                    candidate_xy = (
+                        torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
+                        * span_xy
+                        + lower[particle_idx, :2]
+                    )
+                    placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
+                    if placed_idx.numel() == 0:
+                        valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
+                    else:
+                        delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
+                        min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
+                        valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
+                    has_valid = valid.any(dim=1)
+                    if has_valid.any():
+                        accepted = active_idx[has_valid]
+                        first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
+                        positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
+                        positions[accepted, particle_idx, 2] = z_pos
+                        active[accepted] = False
+                if active.any():
+                    return self._grid_particle_positions(
+                        half_extents=half_extents,
+                        placement_half_extents=placement_half_extents,
+                        collision_half_extents=collision_half_extents,
+                        inner_min=inner_min,
+                        inner_max=inner_max,
+                        min_gap=min_gap,
+                    )
+                placed[particle_idx] = True
 
         return positions
 
@@ -1538,6 +1668,13 @@ class SandboxManipulation:
         min_gap: float,
     ) -> torch.Tensor:
         n_particles = half_extents.shape[0]
+        n_layers = getattr(self, "_n_layers", 1)
+        layer_pitch = float(2.0 * placement_half_extents[:, 2].max().item()) + LAYER_GAP
+        # The grid only has to hold ONE layer's worth of particles; the rest go
+        # on the same grid at a higher z. Sizing it for all n_particles - as the
+        # single-layer original does - would reject layouts that are perfectly
+        # feasible once stacked, which is the whole point of this variant.
+        per_layer = -(-n_particles // n_layers)
         max_half_xy = collision_half_extents[:, :2].max(dim=0).values
         grid_lower = inner_min[:2] + max_half_xy
         grid_upper = inner_max[:2] - max_half_xy
@@ -1546,15 +1683,15 @@ class SandboxManipulation:
 
         best_dims = None
         best_score = None
-        for n_x in range(1, n_particles + 1):
-            n_y = math.ceil(n_particles / n_x)
+        for n_x in range(1, per_layer + 1):
+            n_y = math.ceil(per_layer / n_x)
             spacing_x = grid_span[0] / max(n_x - 1, 1)
             spacing_y = grid_span[1] / max(n_y - 1, 1)
             if n_x > 1 and bool((spacing_x < min_spacing[0]).item()):
                 continue
             if n_y > 1 and bool((spacing_y < min_spacing[1]).item()):
                 continue
-            score = abs(float((spacing_x - spacing_y).item())) + 1e-6 * (n_x * n_y - n_particles)
+            score = abs(float((spacing_x - spacing_y).item())) + 1e-6 * (n_x * n_y - per_layer)
             if best_score is None or score < best_score:
                 best_dims = (n_x, n_y)
                 best_score = score
@@ -1578,13 +1715,23 @@ class SandboxManipulation:
 
         positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
         for env_idx in range(self._n_envs):
-            cell_order = torch.randperm(cells.shape[0], device=gs.device)[:n_particles]
             particle_order = torch.randperm(n_particles, device=gs.device)
-            xy = cells[cell_order]
-            if bool(torch.any(jitter > 0).item()):
-                xy = xy + (torch.rand((n_particles, 2), device=gs.device) * 2.0 - 1.0) * jitter
-            positions[env_idx, particle_order, :2] = xy
-            positions[env_idx, :, 2] = inner_min[2] + placement_half_extents[:, 2] + min_gap
+            # Walk the shuffled particles layer by layer, redrawing the cell
+            # permutation for each layer so two layers do not end up as an
+            # identical grid stacked on itself.
+            for layer_idx in range(n_layers):
+                members = particle_order[layer_idx * per_layer:(layer_idx + 1) * per_layer]
+                if members.numel() == 0:
+                    break
+                cell_order = torch.randperm(cells.shape[0], device=gs.device)[:members.numel()]
+                xy = cells[cell_order]
+                if bool(torch.any(jitter > 0).item()):
+                    xy = xy + (torch.rand((members.numel(), 2), device=gs.device) * 2.0 - 1.0) * jitter
+                positions[env_idx, members, :2] = xy
+                positions[env_idx, members, 2] = (
+                    inner_min[2] + min_gap + layer_idx * layer_pitch
+                    + placement_half_extents[members, 2]
+                )
 
         return positions
 

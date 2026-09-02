@@ -6,16 +6,15 @@ Why
 ---
 ``SandboxManipulation.shuffle_particles()`` itself runs zero simulation steps;
 all of a reset's cost is the settle that must follow it before the pile is at
-rest. Measured on an RTX 4070 at 5 mm cubes:
+rest. ``set_particle_state`` needs no settle at all *provided the state it
+restores was already settled* — which is exactly what this module manufactures.
+Generate a library once per build, then draw from it for the rest of the run.
 
-    n_particles   shuffle + settle   set_particle_state   speedup
-            50            5.08 s            0.094 s          54x
-           100           12.77 s            0.159 s          80x
-           200           42.26 s            0.763 s          55x
-
-``set_particle_state`` needs no settle at all *provided the state it restores
-was already settled* — which is exactly what this module manufactures. Generate
-a library once per build, then draw from it for the rest of the run.
+How large the saving is depends entirely on the machine, the backend and the
+particle count, so no figure is quoted here. Measure it with
+``tests/benchmarks/bench_performance.py``, which also asserts the property that
+does not vary: a restored pile is already at rest, so nothing is settled after
+it.
 
 Augmentation
 ------------
