@@ -17,7 +17,7 @@ from training import export_dino_wm_dataset
 ##################################
 BASIC_SETTING = "basic"
 DEFAULT_SHAPES = ["cube"]
-DEFAULT_NUM_PARTICLES = [30]
+DEFAULT_NUM_PARTICLES = [50]
 PARTICLE_SIZES = np.linspace(0.005, 0.012, 5).tolist()
 
 PARTICLE_FRICTIONS = np.linspace(0.05, 0.5, 5).tolist()
@@ -25,7 +25,7 @@ PARTICLE_DENSITIES = np.linspace(750, 5000, 5).tolist()
 BOX_FRICTION = np.linspace(0.05, 0.5, 4).tolist()
 PER_PARTICLE_VALUE_PROBABILITY = 0.5
 
-PARTICLE_SIZES = [0.012]
+PARTICLE_SIZES = [0.005]
 # len(PARTICLE_FRICTIONS) = number of material-batches; total episodes =
 # that * --n-envs. All entries here are identical (0.12), so batches don't
 # actually vary material properties - this is purely a lever for total
@@ -90,6 +90,13 @@ def parse_args():
     parser.add_argument("--particle-sizes", nargs="+", type=float, default=PARTICLE_SIZES)
     parser.add_argument("--n-envs", type=int, default=10)
     parser.add_argument("--samples-per-env", type=int, default=5)
+    parser.add_argument("--center-bias", type=float, default=0.0, help=(
+        "Forwarded to SandboxManipulation.collect_data_samples()'s center_bias: "
+        "when > 0, each push's STOP is pulled toward the box center by a random "
+        "fraction in [0, center_bias] instead of sampled uniformly, so episodes "
+        "demonstrate gathering material inward rather than a systematic edge/wall "
+        "drift (see generate_action_samples() docstring). 0 (default) = unchanged."
+    ))
     parser.add_argument("--output-root", default="data/corl")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--viewer-type", choices=["observer", "bird", "leveled"], default=None)
@@ -152,8 +159,6 @@ def main():
             # scalar) by scalar_or_particle_values - same handling whether it's the
             # default sweep or a custom list, and correct for every n_p in --num-particles.
             sizes = build_particle_size_settings(args.particle_sizes, n_p, rng)
-            if n_p == 50: 
-                sizes = sizes[:-1] # Exclude largest size for n=50
             for size_setting in sizes:
                 config["material"]["particle_size"] = size_setting["base"]
                 config.setdefault("data_collection", {})["sampled"] = {}
@@ -183,6 +188,7 @@ def main():
                         sm.collect_data_samples(
                             n_samples=args.samples_per_env,
                             path=f"{args.output_root}/{leaf_subpath}",
+                            center_bias=args.center_bias,
                         )
                     except RuntimeError as e:
                         print(f"Maximum attempts reached, stopped retrying to shuffle, skipping: {e}")

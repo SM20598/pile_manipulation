@@ -1190,6 +1190,8 @@ class SandboxManipulation:
             particle_xy: torch.Tensor | None = None,
             grid_res: int = 8,
             density_uniform_mix: float = 1.0,
+            center_bias: float = 0.0,
+            center_xy: tuple = (0.0, 0.0),
         ):
         """
         Generate random action samples for all environments.
@@ -1202,13 +1204,24 @@ class SandboxManipulation:
             empty space becomes increasingly common as a trajectory
             progresses and particles consolidate (measured on the old
             uniform sampler: ~1% of pushes moved no particle at step 0 of a
-            20-step trajectory, vs ~50% by step 19). STOP position and angle
-            are still sampled uniformly, so pushes can still redistribute
-            material into empty regions rather than only ever shuffling
-            already-dense cells. Pass the CURRENT particle state (updated
-            after the previous push), not a snapshot from episode start -
-            the whole point is tracking density as it evolves.
-            When None, falls back to the old fully-uniform behavior.
+            20-step trajectory, vs ~50% by step 19). Pass the CURRENT
+            particle state (updated after the previous push), not a
+            snapshot from episode start - the whole point is tracking
+            density as it evolves. When None, falls back to the old fully
+            uniform START sampling.
+
+        center_bias: when > 0, the STOP position is pulled toward center_xy
+            from the (already-sampled) start position by a random fraction
+            in [0, center_bias] - e.g. center_bias=0.7 means each push moves
+            its contact point somewhere between 0% and 70% of the way to
+            center_xy, instead of an independent uniform-random stop. Used
+            to generate demonstrations of gathering material toward a point
+            (e.g. for the granular-pile "collect into a target area" task),
+            which plain uniform/density-weighted stop sampling never
+            produces on its own - both of those pick stops independent of
+            start, so a typical trajectory has no systematic inward drift.
+            When 0 (default), STOP is sampled uniformly as before, and
+            center_xy is unused.
 
         Returns:
             Tuple of (action_starts, action_stops, angles) each of shape [n_envs, n_samples, 3/1]
@@ -1238,7 +1251,14 @@ class SandboxManipulation:
             start_samples = torch.max(torch.min(start_samples, high), low)
         else:
             start_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
-        stop_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
+
+        if center_bias > 0:
+            center = torch.tensor(center_xy, dtype=start_samples.dtype, device=start_samples.device)
+            shrink = center_bias * torch.rand((n_total, 1), device=start_samples.device)
+            stop_samples = start_samples + shrink * (center - start_samples)
+            stop_samples = torch.max(torch.min(stop_samples, high), low)
+        else:
+            stop_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
         _z = torch.ones((n_total, 1), device=gs.device) * self._operation_height
 
         action_starts = torch.cat((start_samples, _z), axis=1)
@@ -1300,6 +1320,7 @@ class SandboxManipulation:
             self,
             n_samples: int = 200,
             path : str | Path = "training",
+            center_bias: float = 0.0,
         ):
         """
         Collect data samples from all environments efficiently.
@@ -1308,6 +1329,8 @@ class SandboxManipulation:
         Args:
             n_samples: Number of samples to collect per environment
             path: Output path for data
+            center_bias: forwarded to generate_action_samples() - see there.
+                0 (default) reproduces the existing uniform-stop behavior.
         """
         max_samples = n_samples * self._n_envs
 
@@ -1347,7 +1370,7 @@ class SandboxManipulation:
             # later pushes (once particles had already been consolidated by
             # earlier ones) increasingly swept through empty space.
             action_starts, action_stops, angles = self.generate_action_samples(
-                1, particle_xy=self._particle_state[:, :, 0:2]
+                1, particle_xy=self._particle_state[:, :, 0:2], center_bias=center_bias
             )
             p_start = action_starts[:, 0, :]  # [n_envs, 3]
             p_stop = action_stops[:, 0, :]    # [n_envs, 3]

@@ -1,3 +1,6 @@
 [submodule "dino_wm"]
 	path = dino_wm
-	url = https://github.com/gaoyuezhou/dino_wm
+	url = git@github.com:SM20598/dino_wm.git
+[submodule "le-wm"]
+	path = le-wm
+	url = git@github.com:SM20598/le-wm.git
