@@ -2,6 +2,42 @@
 simulation:
   dt: 4e-3
   substeps : 5
+  # SETTLING. update_material_state steps until the pile is actually at rest;
+  # settle_steps is the CAP, not a fixed count, and the win is the early exit
+  # rather than the cap's value. On this monolayer tray the TRUE steps-to-rest
+  # is 34 after a fresh spawn and 1 after a push -- flat from n=50 to n=200,
+  # because particles spawn about a millimetre above their resting height and
+  # nothing has to collapse. Against the previously fixed 200 that is ~6x on a
+  # reset and ~20x per transition. (The loop exits at 40 and 10 respectively,
+  # rounded up to settle_check_every below.)
+  #
+  # The cap is a safety net, not an operating point - 500 is ~15x the worst
+  # observed. Hitting it only warns, and silently records a mid-motion state,
+  # which propagates because each transition's s is the previous one's s'. A
+  # multi-layer spawn is far slower to settle (~1460 steps measured for a
+  # two-layer respawn at n=200) and should raise this in its own config.
+  settle_steps : 500
+  # Steps between rest checks (one GPU sync each). Also acts as a MINIMUM
+  # settle, which is the more important of its two jobs: measured true
+  # steps-to-rest is 34 after a fresh spawn but only 1 after a push, because
+  # the pile has already relaxed during execute_action's 40-step lift and is
+  # at rest before this loop starts. Exiting after a single step would be
+  # correct almost always -- and would maximize exposure to the one failure
+  # this criterion cannot see, a cube at the top of its tipping arc, whose
+  # speed passes through a MINIMUM (see the settling investigation). Ten steps
+  # costs ~2% of a batch and gives a metastable pile a window to reveal itself.
+  settle_check_every : 10
+  settle_velocity_threshold : 1.0e-3        # m/s, matches Genesis' hibernation default
+  # Fraction of particles that must be below threshold. Testing max() instead
+  # makes the criterion harder the more envs are batched -- 32 envs x 200
+  # particles is 6400 chances for one straggler to hold everyone up, and the
+  # settle then always runs to its cap.
+  settle_rest_quantile : 0.995
+  # settle_angular_velocity_threshold is deliberately absent: it is derived from
+  # the linear threshold and the particle's half body diagonal so both express
+  # the same surface speed (~0.23 rad/s for a 5 mm cube). A bare rad/s number is
+  # not comparable to a m/s one -- 0.1 rad/s on a 5 mm cube is 0.35 mm/s at the
+  # corner, 3x stricter than the linear test, which silently made it binding.
   backend : gpu
   precision : '32'
   performance_mode : True
@@ -14,6 +50,21 @@ rigid_options:
   box_box_detection: True
   use_contact_island: True
   use_hibernation: False
+  # Resists spin about the contact normal. Off by Genesis default, which means a
+  # cube resting on the tray had NO resistance to twisting in place - the blade
+  # could rotate a cube it touched off-centre far more freely than a real one on
+  # a real surface. Matters here because the tool is a thin blade that hits most
+  # particles off their centre of mass, so induced spin is a large part of what
+  # a push actually does.
+  enable_torsional_friction: True
+  # Set explicitly rather than left to default because the neighbouring
+  # use_contact_island default FLIPPED upstream (False -> True in 1.2.0), and an
+  # implicit value that changes under you is how a dataset silently stops being
+  # comparable. Newton builds a dense per-island Hessian, so push cost goes as
+  # island_size^2.64; CG would avoid that but its per-island linear solve is
+  # Newton-only upstream, so CG is always islands-off in practice, which is
+  # 5.9x worse on the settle.
+  constraint_solver: Newton
 
 box:
   vol : [0.128, 0.128, 0.032]
@@ -26,9 +77,65 @@ material:
   n_particles : None                        # SET IN DATA_COLLECTION LOOP
   density : None                            # SET IN DATA_COLLECTION LOOP
   friction : None                           # SET IN DATA_COLLECTION LOOP
-safety_margin : 0.005
+# Extra clearance kept between the tool's footprint and the tray wall when
+# drawing a touchdown pose, on top of the tool's own extent at that yaw.
+# Was 0.005 here while the code hardcoded 0.02 and never read this key; set to
+# the value that was actually in force, so changing it now does what it says.
+safety_margin : 0.02
 
 plate:
   speed : 0.125 # m/s
   size : [0.04, 0.002, 0.01]
+  friction : 0.3                            # must be set: unset -> Genesis default 1.0,
+                                            # and contacts combine as max(mu_plate, mu_particle),
+                                            # which would mask the sampled particle friction
+
+  # Actuator model. The real tool is carried by a 3D-printer-style Cartesian
+  # gantry: a heavy carriage driven by steppers with far more force than the
+  # push needs, tracking a trapezoidal velocity profile. So the quantity that
+  # resists granular reaction is the drivetrain's reflected inertia, not the
+  # plate's own weight -- moving_mass is applied via set_dofs_armature, which
+  # adds to the mass-matrix diagonal the solver already uses for contacts.
+  moving_mass : 0.5                         # kg, carriage + gripper reflected onto X/Y/Z
+  acceleration : 2.0                        # m/s^2, trapezoid ramp
+  control_bandwidth_hz : 15.0               # closed-loop bandwidth -> kp = m*w^2, kv = 2*m*w
+  max_force : 30.0                          # N per axis; a real stepper skips steps instead
+                                            # of applying unbounded force on a jam
+
+  # How the DOFs the action does not command (z, roll, pitch, yaw) are held.
+  #
+  #   pinned  overwrite them every step with set_dofs_position. Original
+  #           behaviour, and the default. Two known costs: it clears the solver's
+  #           error flag, so a NaN or buffer overflow during a push cannot be
+  #           reported (audited -- none is actually occurring), and it resets the
+  #           constraint warm start every step.
+  #   servo   hold them with stiff PD instead, so nothing is overwritten
+  #           mid-step.
+  #
+  # `servo` was built, measured and REJECTED -- it fails physics equivalence
+  # with 3-6x higher particle penetration -- so `pinned` is the default and
+  # `servo` is kept only for future work.
+  hold_mode : pinned
+
+  # How the descent and lift are DRIVEN, independent of hold_mode above.
+  #
+  #   teleport  write the pose each step with set_pos. The blade arrives at the
+  #             pile with zero velocity and each step's penetration is resolved
+  #             in one solve -- it cannot be resisted by what it lands on.
+  #   servo     drive it with the actuator, so particles push back.
+  #
+  # `servo` measured at n=200 broadside: particle penetration 1.09 -> 0.53 mm
+  # and its run-to-run spread +/-0.45 -> +/-0.06 mm, with COM and displaced mass
+  # inside the noise floor. It costs 30% more per push, which is the price of
+  # simulating the descent rather than faking it: teleport zeroes the blade's
+  # velocity every step, so the pile barely reacts and those steps are cheap.
+  # Set to `teleport` if that cost outweighs the fidelity at your n.
+  approach_mode : servo
+  arrival_steps : 12                        # steps holding the final descent target so
+                                            # the servo arrives before the sweep starts
+  orientation_inertia : 2.0e-4              # kg m^2, rotary axis reflected inertia
+                                            # (~moving_mass * (tool_length/2)^2)
+  orientation_bandwidth_hz : 30.0           # stiffer than the linear axes: this axis is
+                                            # meant to hold, not to track a profile
+  max_torque : 2.0                          # N m per rotational axis
 

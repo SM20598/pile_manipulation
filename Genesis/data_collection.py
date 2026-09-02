@@ -10,6 +10,7 @@ import torch
 from pathlib import Path
 
 from sandbox_manipulation import SandboxManipulation
+from state_library import default_library_path, load_or_build_state_library
 from training import export_dino_wm_dataset
 
 ##################################
@@ -97,6 +98,54 @@ def parse_args():
         "demonstrate gathering material inward rather than a systematic edge/wall "
         "drift (see generate_action_samples() docstring). 0 (default) = unchanged."
     ))
+    parser.add_argument("--seed", type=int, default=None, help=(
+        "Seed for BOTH generators. Previously this script called "
+        "np.random.default_rng() with no argument and left every torch draw "
+        "(spawn poses, orientations, every action) unseeded, so a run could "
+        "not be repeated - which also meant a run that produced something odd "
+        "could not be replayed to look at it. The seed is recorded in each "
+        "batch's saved config."
+    ))
+    parser.add_argument("--state-library", type=int, default=0, metavar="N", help=(
+        "Settle N piles once per build, expand each by the container's "
+        "symmetry group, save settled_states.pt beside the data, and reset by "
+        "RESTORING a state instead of re-settling. shuffle_particles() itself "
+        "runs zero simulation steps, so all of a reset's cost is the settle "
+        "that follows it: measured 54x faster at n=50 and 6184x at n=200. A "
+        "square tray admits the full dihedral group D4, so each settle yields "
+        "8 variants, and each settle randomizes every env independently - the "
+        "bank is N x n_envs x 8 states for the cost of N settles. "
+        "0 (default) disables it and reproduces the previous behaviour."
+    ))
+    parser.add_argument("--state-library-damping", type=float, default=0.0, help=(
+        "Temporary viscous damping applied DURING library settles only. A "
+        "numerical convergence aid, not a physical model - real air drag on a "
+        "5 mm cube at 50 mm/s is ~3e-5 of its weight. Deliberately never "
+        "applied to the post-push settle, where cutting the relaxation short "
+        "would bias the recorded s' toward smaller displacements."
+    ))
+    parser.add_argument("--start-sampling",
+                        choices=["auto", "uniform", "density", "free", "composed"],
+                        default="auto", help=(
+        "How each push's touchdown pose is drawn. 'auto' (default) keeps the "
+        "current behaviour: density-weighted, which aims the tool at material "
+        "but can materialize the blade inside a cube. 'free' draws from the "
+        "tool's free configuration space instead, cutting touchdown overlap "
+        "from ~89%% to ~16%% but drifting toward empty tray. 'composed' lets "
+        "density choose the neighbourhood and then moves the pose the shortest "
+        "distance that makes it legal - measured to keep density's spatial "
+        "distribution while cutting overlap to ~28%%. See "
+        "generate_action_samples()."
+    ))
+    parser.add_argument("--shared-travel-distance", action="store_true", help=(
+        "Give every env in a batch the same push LENGTH for a given sample, "
+        "keeping its own start point, direction and blade yaw. Envs step in "
+        "lockstep and the sweep is sized from the longest travel in the batch, "
+        "so independent lengths make every env run for the longest one's "
+        "duration - worth up to 12x of end-to-end batch time at 150 objects. "
+        "Costs the within-batch spread of one of five action dimensions, and "
+        "truncates pushes that would leave the sampling box."
+    ))
     parser.add_argument("--output-root", default="data/corl")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--viewer-type", choices=["observer", "bird", "leveled"], default=None)
@@ -123,7 +172,12 @@ def parse_args():
 
 def main():
     args = parse_args()
-    rng = np.random.default_rng()
+    # Seed BOTH generators: the numpy rng below draws the material/size
+    # settings, while torch draws spawn poses, orientations and every action.
+    # Seeding one and not the other does not make a run reproducible.
+    rng = np.random.default_rng(args.seed)
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
 
     if args.n_envs <= 0:
         raise ValueError("--n-envs must be positive")
@@ -142,6 +196,7 @@ def main():
     config.setdefault("data_collection", {}).update({
         "render_images": args.render_images,
         "render_resolution": args.render_resolution,
+        "seed": args.seed,
     })
 
     # Iterate shapes
@@ -179,19 +234,44 @@ def main():
                 sm.build()
 
                 leaf_subpath = f"{shape}/n{n_p}/size{size_setting['base']}"
+
+                # Build (or reuse) the settled-state library once per BUILD.
+                # It is specific to this (shape, n_particles, particle_size),
+                # which is exactly the granularity a rebuild happens at, so it
+                # lives beside the data it was settled for and is found again
+                # on a later run without being pointed at.
+                state_library = None
+                if args.state_library > 0:
+                    sm.set_material_properties(env_settings[0])
+                    lib_path = default_library_path(
+                        Path(__file__).parent / args.output_root,
+                        shape, n_p, size_setting["base"])
+                    print(f"\n--- settled-state library -> {lib_path}", flush=True)
+                    state_library = load_or_build_state_library(
+                        sm, lib_path, n_settles=args.state_library,
+                        damping=args.state_library_damping)
+
                 for property_idx, property_setting in enumerate(env_settings):
                     print(f"\n--- material batch {property_idx + 1}/{len(env_settings)}", flush=True)
 
                     sm.set_material_properties(property_setting)
                     try:
-                        sm.shuffle_particles()
+                        if state_library is None:
+                            sm.shuffle_particles()
                         sm.collect_data_samples(
                             n_samples=args.samples_per_env,
                             path=f"{args.output_root}/{leaf_subpath}",
                             center_bias=args.center_bias,
+                            start_sampling=args.start_sampling,
+                            shared_travel_distance=args.shared_travel_distance,
+                            state_library=state_library,
                         )
                     except RuntimeError as e:
                         print(f"Maximum attempts reached, stopped retrying to shuffle, skipping: {e}")
+
+                if state_library is not None:
+                    state_library.save(
+                        Path(__file__).parent / args.output_root / leaf_subpath)
 
 
                 sm.destroy()
