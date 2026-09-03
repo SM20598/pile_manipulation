@@ -1,22 +1,41 @@
-################################
-# A SCRIPT FOR DATA COLLECTION #
-################################
+#########################################################
+# A SCRIPT FOR DATA COLLECTION - LAYERED SPAWN VARIANT  #
+#########################################################
+"""
+LAYERED VARIANT of Genesis/data_collection.py.
+
+Identical to the original except that it drives
+`sandbox_manipulation_layered.SandboxManipulation`, adds `--n-layers`, and
+writes under a `layers<N>` leaf so a layered dataset can never be mistaken for
+a monolayer one collected at the same (shape, count, size).
+
+Use this only when the particle count will not fit in a single layer - see
+Genesis/layered/README.md for the measured ceilings. At 5 mm cubes a single
+layer holds ~329, so the historical 50-200 sweep does not need this at all.
+
+Run from inside Genesis/layered/:
+    python data_collection_layered.py --num-particles 200 --particle-sizes 0.0085
+"""
 
 import argparse
 import itertools
+import sys
 import yaml
 import numpy as np
 import torch
 from pathlib import Path
 
-from sandbox_manipulation import SandboxManipulation
+# Genesis/ holds the shared modules; this script lives one level down.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sandbox_manipulation_layered import SandboxManipulation
 from state_library import default_library_path, load_or_build_state_library
 from training import export_dino_wm_dataset
 
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
 ##################################
-BASIC_SETTING = "basic"
+BASIC_SETTING = "basic_layered"
 DEFAULT_SHAPES = ["cube"]
 DEFAULT_NUM_PARTICLES = [50]
 PARTICLE_SIZES = np.linspace(0.005, 0.012, 5).tolist()
@@ -98,6 +117,15 @@ def parse_args():
         "demonstrate gathering material inward rather than a systematic edge/wall "
         "drift (see generate_action_samples() docstring). 0 (default) = unchanged."
     ))
+    parser.add_argument("--n-layers", default="auto", help=(
+        "Number of stacked layers to spawn into, or 'auto' (default) to use "
+        "the fewest that will pack. Layers are DROPPED, not interpenetrating: "
+        "the settle that follows collapses them into a natural pile, so the "
+        "resulting arrangement is not literally stratified. Note that a pile "
+        "deeper than the blade is tall has material the tool cannot reach, and "
+        "that a second layer occludes the first from the top-down camera - "
+        "image-based models trained on this data see partial observations."
+    ))
     parser.add_argument("--seed", type=int, default=None, help=(
         "Seed for BOTH generators. Previously this script called "
         "np.random.default_rng() with no argument and left every torch draw "
@@ -147,7 +175,7 @@ def parse_args():
         "Costs the within-batch spread of one of five action dimensions, and "
         "truncates pushes that would leave the sampling box."
     ))
-    parser.add_argument("--output-root", default="data/corl")
+    parser.add_argument("--output-root", default="data/corl_layered")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--viewer-type", choices=["observer", "bird", "leveled"], default=None)
     parser.add_argument("--render-images", action=argparse.BooleanOptionalAction, default=True, help=(
@@ -199,6 +227,12 @@ def main():
         "render_resolution": args.render_resolution,
         "seed": args.seed,
     })
+    n_layers = args.n_layers
+    if n_layers != "auto":
+        n_layers = int(n_layers)
+        if n_layers < 1:
+            raise ValueError("--n-layers must be a positive integer or 'auto'")
+    config["material"]["n_layers"] = n_layers
 
     # Iterate shapes
     shapes = [args.particle_shape] if args.particle_shape != DEFAULT_SHAPES else DEFAULT_SHAPES
@@ -234,7 +268,12 @@ def main():
 
                 sm.build()
 
-                leaf_subpath = f"{shape}/n{n_p}/size{size_setting['base']}"
+                # `layers<N>` in the path, not just in the config: a layered
+                # dataset has different dynamics from a monolayer one at the
+                # same (shape, count, size), and the two must not land in the
+                # same directory and be loaded as one distribution.
+                leaf_subpath = (f"{shape}/n{n_p}/size{size_setting['base']}"
+                                f"/layers{sm._n_layers}")
 
                 # Build (or reuse) the settled-state library once per BUILD.
                 # It is specific to this (shape, n_particles, particle_size),

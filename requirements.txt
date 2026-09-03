@@ -1,4 +1,8 @@
-genesis-world
+# Pinned exactly: `quadrants` (Genesis' compiler) is itself pinned with a hard
+# `==`, and two Genesis versions cannot coexist, so an unpinned float here
+# silently rebuilds the kernel cache. 1.3.3 is the "Genesis World" rename of
+# the same package; the import is still `import genesis as gs`.
+genesis-world==1.3.3
 torch==2.12.0
 torchvision==0.27.0
 PyYAML
@@ -10,3 +14,4 @@ omegaconf==2.3.0
 accelerate==0.26.1
 wandb
 decord==0.6.0
+scipy            # placement-aware action sampling (Euclidean distance transform)

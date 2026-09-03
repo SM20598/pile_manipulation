@@ -1,22 +1,21 @@
-# SIMULATOR SETTINGS
+# SIMULATOR SETTINGS - LAYERED SPAWN VARIANT
+#
+# Copy of Genesis/configs/basic.yaml. Differs only in `settle_steps` and the
+# new `material.n_layers`; every other value and its justification is
+# identical, so diff the two files when upstream changes.
 simulation:
   dt: 4e-3
   substeps : 5
-  # SETTLING. update_material_state steps until the pile is actually at rest;
-  # settle_steps is the CAP, not a fixed count, and the win is the early exit
-  # rather than the cap's value. On this monolayer tray the TRUE steps-to-rest
-  # is 34 after a fresh spawn and 1 after a push -- flat from n=50 to n=200,
-  # because particles spawn about a millimetre above their resting height and
-  # nothing has to collapse. Against the previously fixed 200 that is ~6x on a
-  # reset and ~20x per transition. (The loop exits at 40 and 10 respectively,
-  # rounded up to settle_check_every below.)
+  # SETTLING. Raised well above the monolayer default (500) because a layered
+  # spawn is the one case that genuinely has to collapse: layers are DROPPED,
+  # separated by a 1 mm gap, so the pile has real potential energy to shed
+  # before it comes to rest. ~1460 steps was measured for a two-layer respawn
+  # at n=200 on the historical branch. Still a cap with an early exit, so a
+  # cheap configuration does not pay for this; hitting it only warns.
   #
-  # The cap is a safety net, not an operating point - 500 is ~15x the worst
-  # observed. Hitting it only warns, and silently records a mid-motion state,
-  # which propagates because each transition's s is the previous one's s'. A
-  # multi-layer spawn is far slower to settle (~1460 steps measured for a
-  # two-layer respawn at n=200) and should raise this in its own config.
-  settle_steps : 500
+  # This is the reason the layered path has its own config at all - the
+  # monolayer numbers in Genesis/configs/basic.yaml do not transfer.
+  settle_steps : 3000
   # Steps between rest checks (one GPU sync each). Also acts as a MINIMUM
   # settle, which is the more important of its two jobs: measured true
   # steps-to-rest is 34 after a fresh spawn but only 1 after a push, because
@@ -77,20 +76,19 @@ material:
   n_particles : None                        # SET IN DATA_COLLECTION LOOP
   density : None                            # SET IN DATA_COLLECTION LOOP
   friction : None                           # SET IN DATA_COLLECTION LOOP
-  # Rolling friction, for shapes that can roll. Left unset (None) so it
-  # follows the shape: 0.3 when rigid_options.enable_rolling_friction is on -
-  # which _init_scene turns on automatically for spheres and cylinders - and
-  # unused otherwise. Set a number here to override.
-  #
-  # It matters because Genesis' own default is 1e-4, i.e. nothing. Without a
-  # real value a sphere pile never comes to rest: measured at 100 spheres of
-  # 8.5 mm, the settle burned all 3000 steps and still had not converged,
-  # against 230-560 steps with rolling friction applied. It does NOT make
-  # spheres stack (see PORT_NOTES.md section 8.1) - it only lets them stop.
-  #
-  # Deliberately not applied to cubes: a cube resists rotation with its faces,
-  # so the extra constraint rows would cost solver time for no effect.
+  # Rolling friction for shapes that can roll; None follows the shape (0.3
+  # when enable_rolling_friction is on, which _init_scene sets for spheres and
+  # cylinders). See Genesis/configs/basic.yaml for why it is not optional for
+  # spheres.
   rolling_friction : None
+  # Stacked layers to spawn into. "auto" asks materials_layered.plan_layers()
+  # for the fewest that will pack; an integer forces it. Overridden by
+  # data_collection_layered.py's --n-layers.
+  #
+  # Measured single-layer ceilings in this 127 mm tray (cubes): 329 at 5.00 mm,
+  # 185 at 6.75 mm, 112 at 8.50 mm, 82 at 10.25 mm, 53 at 12.00 mm. Below those
+  # counts this whole path is unnecessary - use Genesis/data_collection.py.
+  n_layers : auto
 # Extra clearance kept between the tool's footprint and the tray wall when
 # drawing a touchdown pose, on top of the tool's own extent at that yaw.
 # Was 0.005 here while the code hardcoded 0.02 and never read this key; set to
@@ -100,6 +98,12 @@ safety_margin : 0.02
 plate:
   speed : 0.125 # m/s
   size : [0.04, 0.002, 0.01]
+  # Grow plate.size[2] so the blade reaches the top of an L-layer settled
+  # pile: the blade's bottom edge is pinned to the resting particles' centre
+  # height, so its reach is size/2 + plate.size[2], and a settled stack is
+  # L*size tall. The stock 10 mm blade covers only 2 layers of 5 mm cubes.
+  # false keeps the configured height and leaves the pile's top untouched.
+  scale_height_with_layers : true
   friction : 0.3                            # must be set: unset -> Genesis default 1.0,
                                             # and contacts combine as max(mu_plate, mu_particle),
                                             # which would mask the sampled particle friction
