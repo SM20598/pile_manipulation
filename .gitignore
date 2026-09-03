@@ -1,4 +1,5 @@
 .venv/
+.vscode/
 Genesis/utilities/__pycache__/*
 Genesis/training/__pycache__/*
 Genesis/training/__pycache__/dataset.cpython-310.pyc
@@ -12,9 +13,12 @@ __pycache__/
 
 # Collected datasets and generated run artefacts. Reproducible from the
 # configs and seeds recorded alongside them.
-Genesis/data/dry_run/
-Genesis/data/ignore/
-Genesis/data/seedtest/
+# Collected datasets. Genesis/data/ is where every collection lands
+# (--output-root is relative to Genesis/), so ignore the whole tree rather than
+# naming run directories one at a time - the previous list missed every new
+# name, which is exactly how a multi-GB dataset gets committed by accident.
+# Nothing under it is tracked.
+Genesis/data/
 Genesis/layered/data/
 outputs/
 
